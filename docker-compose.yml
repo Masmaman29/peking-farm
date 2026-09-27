@@ -1,0 +1,71 @@
+# PEKING FARM — jalan berdampingan dengan stack /opt/pusatsnack-ai (Nginx Proxy Manager)
+services:
+  pf-db:
+    image: postgres:16-alpine
+    container_name: pf-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pekingfarm
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${PF_DB_PASSWORD}
+      TZ: Asia/Jakarta
+    volumes:
+      - pf-db-data:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d:ro      # 001_schema, 002_sessions dijalankan saat init pertama
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pekingfarm"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [pf-net]
+
+  pf-app:
+    build: .
+    container_name: pf-app
+    restart: unless-stopped
+    depends_on:
+      pf-db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:${PF_DB_PASSWORD}@pf-db:5432/pekingfarm
+      APP_DB_ROLE_PASSWORD: ${PF_APP_DB_PASSWORD}
+      SESSION_SECRET: ${PF_SESSION_SECRET}
+      UPLOAD_DIR: /data/uploads
+      PUBLIC_URL: ${PF_PUBLIC_URL}
+      SEED_DEMO: ${PF_SEED_DEMO:-true}
+      TZ: Asia/Jakarta
+      NODE_ENV: production
+    volumes:
+      - ./data/uploads:/data/uploads
+    ports:
+      - "127.0.0.1:3080:3000"     # NPM: proxy host farm.pekingfarm.id -> http://172.17.0.1:3080 (atau join network npm)
+    networks: [pf-net, npm-net]
+
+  pf-backup:
+    image: postgres:16-alpine
+    container_name: pf-backup
+    restart: unless-stopped
+    depends_on: [pf-db]
+    environment:
+      PGPASSWORD: ${PF_DB_PASSWORD}
+      TZ: Asia/Jakarta
+    volumes:
+      - ./data/backups:/backups
+    entrypoint: ["/bin/sh","-c"]
+    command:
+      - |
+        while true; do
+          pg_dump -h pf-db -U postgres -d pekingfarm -Fc -f /backups/pekingfarm-$(date +%F).dump && \
+          find /backups -name '*.dump' -mtime +14 -delete
+          sleep 86400
+        done
+    networks: [pf-net]
+
+volumes:
+  pf-db-data:
+
+networks:
+  pf-net:
+  npm-net:
+    external: true
+    name: ${NPM_NETWORK:-pusatsnack-ai_default}   # network tempat Nginx Proxy Manager berada (cek: docker network ls)
