@@ -1,4 +1,4 @@
-# PEKING FARM — Modern Duck Farming
+# AR-FARM — Modern Duck Farming
 
 Sistem manajemen peternakan bebek Peking: ledger populasi & stok, approval, audit trail
 (hash chain), deteksi anomali, dashboard per role, aplikasi mobile anak kandang, dan
@@ -20,11 +20,11 @@ docker network ls                        # cari network NPM, isi NPM_NETWORK di 
 docker compose up -d --build
 docker compose logs -f pf-app            # tunggu "Demo seed selesai"
 ```
-Di Nginx Proxy Manager: **Add Proxy Host** → domain `farm.pekingfarm.id` → forward ke
+Di Nginx Proxy Manager: **Add Proxy Host** → domain `os.argrupfarmindonesia.my.id` → forward ke
 `pf-app` port `3000` (karena satu network) → SSL Let's Encrypt → Websockets off, Block
 common exploits on.
 
-Website publik: `https://farm.pekingfarm.id/#website` (atau proxy host kedua `pekingfarm.id`
+Website publik: `https://os.argrupfarmindonesia.my.id/#website` (atau proxy host kedua `argrupfarmindonesia.my.id`
 ke service yang sama; tampilan otomatis memilih website bila URL berakhiran `#website`).
 
 ## Akun demo (seed otomatis saat DB kosong; matikan dengan `PF_SEED_DEMO=false`)

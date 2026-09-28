@@ -1,6 +1,6 @@
 
 /* =====================================================================
-   PEKING FARM — Interactive Prototype
+   AR-FARM — Interactive Prototype
    Single source of truth: DB. Every displayed number is derived from
    transactions in DB via the functions in `calc`. Nothing is hardcoded
    on the page. All data is DEMO DATA.

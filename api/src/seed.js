@@ -18,7 +18,7 @@ export async function seedIfEmpty(log = console) {
     const day = (n, h = 8, m = 0) => { const d = new Date(dod.getTime() + (n - 1) * dayMs); d.setHours(h, m, 0, 0); return d; };
     const hash = await argon2.hash('demo1234', { type: argon2.argon2id });
 
-    const farm = (await c.query(`INSERT INTO farm(name,location,lat,lng) VALUES ('Peking Farm','Sidoarjo, Jawa Timur',-7.4478,112.7183) RETURNING id`)).rows[0].id;
+    const farm = (await c.query(`INSERT INTO farm(name,location,lat,lng) VALUES ('AR-FARM','Sidoarjo, Jawa Timur',-7.4478,112.7183) RETURNING id`)).rows[0].id;
     const barn = {};
     for (const [code, name, note] of [['A', 'Kandang A', null], ['B', 'Kandang B', null], ['C', 'Kandang C', 'Kosong — siap siklus berikutnya']])
       barn[code] = (await c.query(`INSERT INTO barn(farm_id,code,name,capacity,note) VALUES ($1,$2,$3,300,$4) RETURNING id`, [farm, code, name, note])).rows[0].id;

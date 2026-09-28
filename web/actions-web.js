@@ -28,7 +28,7 @@ const calcOrig={productStock:calc.productStock,population:calc.population,avgWei
 async function siteBoot(){
   const [prods,farm]=await Promise.all([api('/public/products'),api('/public/farm')]);
   const harvest=farm.harvestDate?new Date(farm.harvestDate):new Date();
-  DB={farm:{name:'Peking Farm',location:'Sidoarjo, Jawa Timur'},cycle:{code:farm.cycle||'-',dodQty:500,targetDays:45,dodDate:new Date(harvest.getTime()-44*86400000)},products:prods.map(p=>({id:p.id,name:p.name,desc:p.desc,unit:'ekor',priceKg:'price',price:p.pricePerKg,minOrder:p.minOrder,stockFrom:p.type==='LIVE'?'population':'inv',avgW:p.avgWeightKg,stock:p.availableStock,pubStatus:p.status})),customers:[],orders:[],users:[]};
+  DB={farm:{name:'AR-FARM',location:'Sidoarjo, Jawa Timur'},cycle:{code:farm.cycle||'-',dodQty:500,targetDays:45,dodDate:new Date(harvest.getTime()-44*86400000)},products:prods.map(p=>({id:p.id,name:p.name,desc:p.desc,unit:'ekor',priceKg:'price',price:p.pricePerKg,minOrder:p.minOrder,stockFrom:p.type==='LIVE'?'population':'inv',avgW:p.avgWeightKg,stock:p.availableStock,pubStatus:p.status})),customers:[],orders:[],users:[]};
   MASTER={price:0};DEMO_TODAY=new Date();
   DB.products.forEach(p=>{MASTER['price_'+p.id]=p.price;p.priceKg='price_'+p.id;});
   calc.productStock=p=>p.stock;calc.population=()=>farm.population||0;calc.avgWeight=()=>farm.avgWeightKg||0;calc.mortPct=()=>farm.mortalityPct||0;
@@ -127,6 +127,9 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
 (async function boot(){
   if(location.hash==='#website'){return siteBoot();}
   try{const me=await api('/auth/me');await loadDB();state.user=DB.users.find(x=>x.id===me.id)||me;state.page=me.role==='ANAK_KANDANG'?'ak-home':'dashboard';state.view='app';}
-  catch{state.user=null;state.view='login';}
+  catch{
+    state.user=null;state.view='login';
+    try{state.publicStats=await api('/public/farm');}catch{state.publicStats={};}
+  }
   render();
 })();

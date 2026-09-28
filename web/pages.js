@@ -116,7 +116,7 @@ function renderShell(content){
   return `<div class="app">
   ${state.sideOpen?'<div class="overlay" data-act="side-close"></div>':''}
   <aside class="sidebar ${state.sideOpen?'open':''}">
-    <div class="brand"><div class="logo">${DUCK_ART()}</div><div><b>PEKING FARM</b><small>Modern Duck Farming</small></div></div>
+    <div class="brand"><img class="logo" src="/img/logo-mark.png" alt="" style="width:42px;height:auto;background:none"><div><b>AR-FARM</b><small>Modern Duck Farming</small></div></div>
     <nav class="nav">${NAV.map(navBtn).join('')}<div class="nav-sec">Integritas Data</div>${NAV2.map(navBtn).join('')}<div class="nav-sec">Publik</div><button data-act="site">${ic('globe')}<span>Website Penjualan</span></button></nav>
     <div class="ai-card"><b>${ic('ai',16)} Tanya Farm AI</b><p>Tanya apa saja tentang populasi, pakan, FCR, stok, atau keuangan siklus ini.</p><button class="btn primary sm" data-act="ai-open">Mulai Chat ${ic('arrow',14)}</button></div>
   </aside>
@@ -165,7 +165,7 @@ const KPIROW=()=>{const f=calc.fcr();const gap=calc.weightGap();return `<div cla
  ${can('finance')?kpi('Estimasi Omzet',rp(calc.estRevenue()),'',`${num(calc.projectedPop())} ekor × ~${num(MASTER.targetBobotMin*1.1,2)} kg × ${rp(MASTER.hargaJualHidupKg)}`,'','cart','gold'):''}
  ${can('finance')?kpi('Estimasi Laba',rp(calc.estProfit()),'',`ROI ${pct(calc.roi())} · setelah proyeksi biaya sisa ${rp(calc.projectedRemainingCost())}`,calc.estProfit()>0?'up':'down','growth','gold'):''}
 </div>`;};
-const heroCard=()=>`<div class="hero"><div class="art">${DUCK_ART(.9)}</div><div class="weather">${ic('sun',18)} <b>28°C</b><small>Cerah berawan · ${DB.farm.location}</small></div>
+const heroCard=()=>`<div class="hero"><img class="art" src="/img/logo-mark.png" alt="" style="opacity:.16;width:300px"><div class="weather">${ic('sun',18)} <b>28°C</b><small>Cerah berawan · ${DB.farm.location}</small></div>
  <div class="row">${stBadge(DB.cycle.status)}<span style="color:var(--muted);font-weight:700">Siklus ${DB.cycle.code}</span></div>
  <h1>${DB.cycle.breed}</h1>
  <div class="meta"><span><b class="num">${num(DB.cycle.dodQty)}</b> DOD</span><span><b class="num">Hari ke-${calc.day()}</b> dari ${DB.cycle.targetDays}</span><span>Fase <b>${DB.cycle.stage}</b></span><span>Estimasi panen <b>${fmtDate(dateOfDay(DB.cycle.targetDays))}</b></span></div>
