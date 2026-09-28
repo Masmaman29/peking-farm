@@ -10,6 +10,7 @@ import { pool, one, q, rows, tx, audit, ensureAppRole } from './db.js';
 import { buildBootstrap } from './bootstrap.js';
 import { runAction, publicOrder, ActionError } from './actions.js';
 import { seedIfEmpty } from './seed.js';
+import { migrate } from './migrate.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = Fastify({ logger: { level: process.env.LOG_LEVEL || 'info' }, trustProxy: true, bodyLimit: 15 * 1024 * 1024 });
@@ -111,6 +112,7 @@ app.setNotFoundHandler((req, reply) => { if (req.url.startsWith('/api/')) return
 /* ---------- cron ringan: auto-lock tiap jam, bersih sesi ---------- */
 setInterval(() => { q('SELECT fn_auto_lock()').catch(() => {}); q('DELETE FROM session WHERE expires_at < now()').catch(() => {}); }, 3600 * 1000);
 
+await migrate(app.log).catch(e => app.log.error('migrate: ' + e.message));
 await ensureAppRole().catch(e => app.log.warn('ensureAppRole: ' + e.message));
 if (process.env.SEED_DEMO !== 'false') await seedIfEmpty(app.log);
 app.listen({ port: +(process.env.PORT || 3000), host: '0.0.0.0' });

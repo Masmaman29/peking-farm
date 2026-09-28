@@ -300,14 +300,53 @@ export const ACTIONS = {
   /* ---------------- PENGGUNA & KONFIGURASI ---------------- */
   async USER_CREATE(c, p, user) {
     need(user, ['OWNER', 'ADMIN']);
-    const v = z.object({ name: z.string().min(2), role: z.enum(['OWNER', 'MANAGER', 'ADMIN', 'ANAK_KANDANG']), barn: z.string().optional(), phone: z.string().min(6), password: z.string().min(8).optional() }).parse(p);
+    const v = z.object({ name: z.string().min(2), role: z.enum(['OWNER', 'MANAGER', 'ADMIN', 'ANAK_KANDANG']), barn: z.string().optional(), phone: z.string().min(6), email: z.string().email().optional().or(z.literal('')), password: z.string().min(8, 'Password minimal 8 karakter.') }).parse(p);
     if (v.role === 'OWNER' && user.role !== 'OWNER') deny('Hanya OWNER yang dapat membuat akun OWNER.');
     const farm = (await c.query('SELECT id FROM farm LIMIT 1')).rows[0];
     const b = v.barn ? (await c.query('SELECT id FROM barn WHERE code=$1', [v.barn])).rows[0]?.id : null;
-    const hash = v.password ? await argon2.hash(v.password, { type: argon2.argon2id }) : null;
-    const r = await c.query(`INSERT INTO app_user(farm_id,name,phone,role,barn_id,password_hash) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, [farm.id, v.name, v.phone, v.role, b, hash]);
+    const hash = await argon2.hash(v.password, { type: argon2.argon2id });
+    const r = await c.query(`INSERT INTO app_user(farm_id,name,phone,email,role,barn_id,password_hash,password_changed_at) VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7,now()) RETURNING id`, [farm.id, v.name, v.phone, v.email || '', v.role, b, hash]);
     await audit(c, user.id, 'CREATE', 'app_user', `Pengguna ${v.name} (${v.role}) dibuat`, r.rows[0].id);
     return { id: r.rows[0].id };
+  },
+  async USER_UPDATE(c, p, user) {
+    need(user, ['OWNER', 'ADMIN']);
+    const v = z.object({ id: uuid, name: z.string().min(2), phone: z.string().min(6), email: z.string().email('Format email tidak valid.').optional().or(z.literal('')), role: z.enum(['OWNER', 'MANAGER', 'ADMIN', 'ANAK_KANDANG']), barn: z.string().optional() }).parse(p);
+    const t = (await c.query('SELECT id,name,phone,email,role,barn_id FROM app_user WHERE id=$1', [v.id])).rows[0];
+    if (!t) throw new ActionError('Pengguna tidak ditemukan.');
+    if ((t.role === 'OWNER' || v.role === 'OWNER') && user.role !== 'OWNER') deny('Hanya OWNER yang dapat mengubah akun OWNER.');
+    if (t.role === 'OWNER' && v.role !== 'OWNER') {
+      const n = +(await c.query(`SELECT count(*) n FROM app_user WHERE role='OWNER' AND is_active AND id<>$1`, [v.id])).rows[0].n;
+      if (!n) deny('Harus tersisa minimal satu OWNER aktif.');
+    }
+    const b = v.role === 'ANAK_KANDANG' ? (await c.query('SELECT id FROM barn WHERE code=$1', [v.barn || ''])).rows[0]?.id : null;
+    if (v.role === 'ANAK_KANDANG' && !b) throw new ActionError('Anak kandang wajib punya kandang.');
+    await c.query(`UPDATE app_user SET name=$1, phone=$2, email=NULLIF($3,''), role=$4, barn_id=$5, updated_at=now() WHERE id=$6`, [v.name, v.phone, v.email || '', v.role, b, v.id]);
+    const diff = [];
+    if (t.name !== v.name) diff.push(`nama ${t.name} \u2192 ${v.name}`);
+    if (t.phone !== v.phone) diff.push(`HP ${t.phone} \u2192 ${v.phone}`);
+    if ((t.email || '') !== (v.email || '')) diff.push(`email ${t.email || '-'} \u2192 ${v.email || '-'}`);
+    if (t.role !== v.role) diff.push(`role ${t.role} \u2192 ${v.role}`);
+    await audit(c, user.id, 'UPDATE', 'app_user', `Data ${v.name} diubah${diff.length ? ' \u2014 ' + diff.join('; ') : ''}`, v.id, { name: t.name, phone: t.phone, email: t.email, role: t.role }, { name: v.name, phone: v.phone, email: v.email || null, role: v.role });
+    return {};
+  },
+  async USER_PASSWORD(c, p, user, _file, req) {
+    const v = z.object({ id: uuid, current: z.string().optional(), password: z.string().min(8, 'Password minimal 8 karakter.') }).parse(p);
+    const t = (await c.query('SELECT id,name,role,password_hash FROM app_user WHERE id=$1', [v.id])).rows[0];
+    if (!t) throw new ActionError('Pengguna tidak ditemukan.');
+    const self = v.id === user.id;
+    if (self) {
+      if (!v.current || !t.password_hash || !(await argon2.verify(t.password_hash, v.current))) throw new ActionError('Password lama salah.');
+    } else {
+      need(user, ['OWNER', 'ADMIN']);
+      if (t.role === 'OWNER' && user.role !== 'OWNER') deny('Hanya OWNER yang dapat mengatur password OWNER.');
+    }
+    const hash = await argon2.hash(v.password, { type: argon2.argon2id });
+    await c.query('UPDATE app_user SET password_hash=$1, password_changed_at=now(), failed_logins=0, locked_until=NULL, updated_at=now() WHERE id=$2', [hash, v.id]);
+    // paksa login ulang di semua perangkat lain, sesi yang sedang dipakai tetap hidup
+    await c.query('DELETE FROM session WHERE user_id=$1 AND id <> $2', [v.id, req?.cookies?.pf_session || '00000000-0000-0000-0000-000000000000']);
+    await audit(c, user.id, 'UPDATE', 'app_user', self ? 'Mengganti password sendiri' : `Password ${t.name} diatur ulang oleh ${user.role}`, v.id);
+    return { self };
   },
   async USER_TOGGLE(c, p, user) {
     need(user, ['OWNER', 'ADMIN']);

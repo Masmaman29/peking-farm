@@ -5,6 +5,7 @@ COPY api/package.json ./
 RUN npm install --omit=dev && apk del python3 make g++
 COPY api/src ./src
 COPY web /app/web
+COPY db /app/db
 ENV NODE_ENV=production PORT=3000
 EXPOSE 3000
 CMD ["node","src/server.js"]
