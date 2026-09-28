@@ -54,10 +54,6 @@ input,select,textarea{font:inherit}
 .login-visual .pillar b{display:block;font-size:13px;margin-bottom:4px}
 .login-visual .pillar span{color:var(--muted);font-size:12px}
 .login-visual > small{margin-top:auto;padding-top:28px}
-.duck-wrap{position:absolute;right:9%;bottom:58px;z-index:0;pointer-events:none;user-select:none}
-.duck-wrap img{display:block;height:clamp(200px,38vh,400px);width:auto;filter:drop-shadow(0 26px 30px rgba(0,0,0,.42))}
-.duck-wrap::after{content:'';position:absolute;left:50%;bottom:-12px;transform:translateX(-50%);width:76%;height:24px;border-radius:50%;background:radial-gradient(closest-side,rgba(0,0,0,.55),transparent);filter:blur(6px)}
-.login-visual > div:first-of-type,.login-visual .livebox,.login-visual > small{position:relative;z-index:1}
 .field-art{position:absolute;inset:auto -10% -18% -10%;height:55%;pointer-events:none;opacity:.9}
 .login-form{display:flex;align-items:center;justify-content:center;padding:32px 20px;background:var(--bg2)}
 .login-card{width:100%;max-width:420px}
@@ -369,7 +365,7 @@ td.r,th.r{text-align:right}
   .stage div{padding:8px 4px}
   .site-hero .wrap,.login{grid-template-columns:1fr}
   .login-visual{padding:28px 20px;min-height:auto}
-  .field-art,.duck-wrap{display:none}
+  .field-art{display:none}
   .stat-strip{grid-template-columns:1fr 1fr}
   .site-nav .links{display:none}
   .drawer{width:100%}
