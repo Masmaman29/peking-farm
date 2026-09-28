@@ -297,6 +297,50 @@ export const ACTIONS = {
     return {};
   },
 
+  /* ---------------- KANDANG ---------------- */
+  async BARN_CREATE(c, p, user) {
+    need(user, ['OWNER']);
+    const v = z.object({ code: z.string().trim().min(1).max(4), name: z.string().trim().min(2), capacity: z.number().int().positive('Kapasitas harus lebih dari 0.'), note: z.string().trim().optional() }).parse(p);
+    const code = v.code.toUpperCase();
+    if (!/^[A-Z0-9]+$/.test(code)) throw new ActionError('Kode kandang hanya huruf/angka, contoh: D atau K4.');
+    const farm = (await c.query('SELECT id FROM farm LIMIT 1')).rows[0];
+    const dup = (await c.query('SELECT id FROM barn WHERE farm_id=$1 AND code=$2', [farm.id, code])).rows[0];
+    if (dup) throw new ActionError(`Kode kandang "${code}" sudah dipakai.`);
+    const r = await c.query(`INSERT INTO barn(farm_id,code,name,capacity,note) VALUES ($1,$2,$3,$4,NULLIF($5,'')) RETURNING id`, [farm.id, code, v.name, v.capacity, v.note || '']);
+    await audit(c, user.id, 'CREATE', 'barn', `Kandang ${v.name} (${code}) dibuat \u2014 kapasitas ${v.capacity} ekor`, r.rows[0].id, null, { code, name: v.name, capacity: v.capacity });
+    return { id: r.rows[0].id };
+  },
+  async BARN_UPDATE(c, p, user) {
+    need(user, ['OWNER']);
+    const v = z.object({ code: z.string().trim().min(1), name: z.string().trim().min(2), capacity: z.number().int().positive('Kapasitas harus lebih dari 0.'), note: z.string().trim().optional() }).parse(p);
+    const b = (await c.query('SELECT id,code,name,capacity,note FROM barn WHERE code=$1', [v.code.toUpperCase()])).rows[0];
+    if (!b) throw new ActionError('Kandang tidak ditemukan.');
+    const pop = +(await c.query('SELECT COALESCE(SUM(population),0) n FROM v_population WHERE barn_id=$1', [b.id])).rows[0].n;
+    if (v.capacity < pop) throw new ActionError(`Kapasitas tidak boleh di bawah populasi saat ini (${pop} ekor).`);
+    await c.query(`UPDATE barn SET name=$1, capacity=$2, note=NULLIF($3,''), updated_at=now() WHERE id=$4`, [v.name, v.capacity, v.note || '', b.id]);
+    const diff = [];
+    if (b.name !== v.name) diff.push(`nama ${b.name} \u2192 ${v.name}`);
+    if (b.capacity !== v.capacity) diff.push(`kapasitas ${b.capacity} \u2192 ${v.capacity}`);
+    if ((b.note || '') !== (v.note || '')) diff.push('catatan diubah');
+    await audit(c, user.id, 'UPDATE', 'barn', `Kandang ${v.name}${diff.length ? ' \u2014 ' + diff.join('; ') : ''}`, b.id, { name: b.name, capacity: b.capacity, note: b.note }, { name: v.name, capacity: v.capacity, note: v.note || null });
+    return {};
+  },
+  async BARN_TOGGLE(c, p, user) {
+    need(user, ['OWNER']);
+    const v = z.object({ code: z.string().trim().min(1) }).parse(p);
+    const b = (await c.query('SELECT id,name,is_active FROM barn WHERE code=$1', [v.code.toUpperCase()])).rows[0];
+    if (!b) throw new ActionError('Kandang tidak ditemukan.');
+    if (b.is_active) {
+      const pop = +(await c.query('SELECT COALESCE(SUM(population),0) n FROM v_population WHERE barn_id=$1', [b.id])).rows[0].n;
+      if (pop > 0) throw new ActionError(`Kandang masih berisi ${pop} ekor. Kosongkan dulu sebelum dinonaktifkan.`);
+      const staff = +(await c.query('SELECT count(*) n FROM app_user WHERE barn_id=$1 AND is_active', [b.id])).rows[0].n;
+      if (staff > 0) throw new ActionError(`Masih ada ${staff} anak kandang yang ditugaskan di sini. Pindahkan dulu.`);
+    }
+    await c.query('UPDATE barn SET is_active = NOT is_active, updated_at=now() WHERE id=$1', [b.id]);
+    await audit(c, user.id, 'UPDATE', 'barn', `Kandang ${b.name} ${b.is_active ? 'dinonaktifkan' : 'diaktifkan'}`, b.id);
+    return { active: !b.is_active };
+  },
+
   /* ---------------- PENGGUNA & KONFIGURASI ---------------- */
   async USER_CREATE(c, p, user) {
     need(user, ['OWNER', 'ADMIN']);

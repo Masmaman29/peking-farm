@@ -13,7 +13,7 @@ export async function buildBootstrap(user) {
   const ak = user.role === 'ANAK_KANDANG';
   const cfg = await config();
   const farm = await one('SELECT * FROM farm ORDER BY created_at LIMIT 1');
-  const barns = await rows('SELECT id,code,name,capacity,note FROM barn WHERE farm_id=$1 ORDER BY code', [farm.id]);
+  const barns = await rows('SELECT id,code,name,capacity,note,is_active FROM barn WHERE farm_id=$1 ORDER BY code', [farm.id]);
   const bcode = Object.fromEntries(barns.map(b => [b.id, b.code]));
   const cycle = await one(`SELECT * FROM cycle WHERE farm_id=$1 AND status='ACTIVE' ORDER BY dod_date DESC LIMIT 1`, [farm.id]);
   const prevCycles = await rows(`SELECT * FROM cycle WHERE farm_id=$1 AND status<>'ACTIVE' ORDER BY dod_date DESC`, [farm.id]);
@@ -74,7 +74,7 @@ export async function buildBootstrap(user) {
     },
     farm: { id: farm.id, name: farm.name, location: farm.location },
     users: users.map(u => ({ id: u.id, name: u.name, role: u.role, barn: bcode[u.barn_id] || null, active: u.is_active, phone: u.phone, email: u.email, lastLogin: u.last_login_at })),
-    barns: barns.map(b => ({ id: b.code, uuid: b.id, name: b.name, cap: b.capacity, note: b.note })),
+    barns: barns.map(b => ({ id: b.code, uuid: b.id, name: b.name, cap: b.capacity, note: b.note, active: b.is_active })),
     cycle: cycle ? { id: cycle.id, code: cycle.code, breed: cycle.breed, status: 'AKTIF', dodDate: cycle.dod_date, dodQty: cycle.dod_qty, dodPrice: +cycle.dod_price, dodWeight: +cycle.dod_weight_kg, targetDays: cycle.target_days, targetWeight: [+cycle.target_weight_min, +cycle.target_weight_max], targetMort: +cycle.target_mort_pct, stage: cycle.stage, createdBy: cycle.created_by, createdAt: cycle.created_at } : null,
     prevCycles: prevCycles.map(c => ({ id: c.id, code: c.code, breed: c.breed, status: 'SELESAI', dodDate: c.dod_date, dodQty: c.dod_qty })),
     popTx: popTx.map(t => ({ id: t.id, date: t.occurred_at, type: t.type === 'DOD_IN' ? 'DOD_MASUK' : t.type === 'DEATH' ? 'KEMATIAN' : t.type === 'SALE' ? 'PENJUALAN' : t.type === 'TRANSFER_IN' ? 'TRANSFER_MASUK' : t.type === 'TRANSFER_OUT' ? 'TRANSFER_KELUAR' : t.type, barn: bcode[t.barn_id], qty: t.qty, user: t.created_by, ref: t.ref_id, locked: true })),

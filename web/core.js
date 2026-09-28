@@ -101,6 +101,10 @@ const calc = {
 };
 const userName = id=>id==='SYSTEM'?'Sistem':(DB.users.find(u=>u.id===id)||{name:id}).name;
 const userRole = id=>id==='SYSTEM'?'':(DB.users.find(u=>u.id===id)||{role:''}).role;
+// kandang aktif (untuk dropdown operasional); yang sedang terisi didahulukan
+const barnsActive = ()=>DB.barns.filter(b=>b.active!==false);
+const barnsWorking = ()=>{const a=barnsActive().filter(b=>calc.population(b.id)>0);return a.length?a:barnsActive();};
+const barnOptions = (sel,all)=>(all?`<option value="ALL"${sel==='ALL'?' selected':''}>Semua</option>`:'')+barnsWorking().map(b=>`<option value="${b.id}"${sel===b.id?' selected':''}>${b.name}</option>`).join('');
 const barnName = b=>b==='ALL'?'Semua kandang':(DB.barns.find(x=>x.id===b)||{name:b}).name;
 const logAudit=()=>{}; // audit ditulis server
 
