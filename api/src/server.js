@@ -114,5 +114,5 @@ setInterval(() => { q('SELECT fn_auto_lock()').catch(() => {}); q('DELETE FROM s
 
 await migrate(app.log).catch(e => app.log.error('migrate: ' + e.message));
 await ensureAppRole().catch(e => app.log.warn('ensureAppRole: ' + e.message));
-if (process.env.SEED_DEMO !== 'false') await seedIfEmpty(app.log);
+if (process.env.SEED_DEMO === 'true') await seedIfEmpty(app.log);
 app.listen({ port: +(process.env.PORT || 3000), host: '0.0.0.0' });

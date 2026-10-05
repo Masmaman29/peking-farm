@@ -28,7 +28,7 @@ PF_DB_PASSWORD=$(rnd 24)
 PF_APP_DB_PASSWORD=$(rnd 24)
 PF_SESSION_SECRET=$(rnd 64)
 PF_PUBLIC_URL=${DOMAIN:+https://$DOMAIN}
-PF_SEED_DEMO=true
+PF_SEED_DEMO=false
 NPM_NETWORK=$NPM_NET
 EOF
   echo ".env dibuat (network proxy: $NPM_NET)"

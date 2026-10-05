@@ -60,7 +60,6 @@ const lastN=(a,n)=>a.slice(Math.max(0,a.length-n));
 const dayLabels=n=>{const d=calc.day();const out=[];for(let i=d-n+1;i<=d;i++)out.push('H'+i);return out;};
 const toast=(msg,k='ok')=>{const w=document.getElementById('toasts');const t=document.createElement('div');t.className='toast '+k;t.innerHTML=`${ic(k==='ok'?'check':k==='err'?'alert':'alert',18)}<span>${msg}</span>`;w.appendChild(t);setTimeout(()=>t.remove(),3200);};
 const photoChip=p=>p?(String(p).startsWith('/uploads/')?`<a class="thumb" href="${p}" target="_blank" rel="noopener" title="Lihat bukti">${ic('camera',14)}</a>`:`<span class="thumb" title="${p}">${ic('camera',14)}</span>`):'<span class="badge b-neutral">—</span>';
-const demoTag=()=>`<span class="demo-tag">${ic('alert',12)} DEMO DATA</span>`;
 
 /* ---------------- CHARTS ---------------- */
 let charts=[];

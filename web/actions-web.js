@@ -49,7 +49,6 @@ document.addEventListener('click',e=>{
   case 'side-close':state.sideOpen=false;render();break;
   case 'notif':state.notif=!state.notif;render();break;
   case 'logout':logout();break;
-  case 'login-role':state.loginRole=d.v;render();break;
   case 'site':siteBoot();break;
   case 'site-exit':siteExit();break;
   case 'tab':state.tab=d.v;render();break;
