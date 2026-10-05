@@ -64,6 +64,7 @@ document.addEventListener('click',e=>{
   case 'approve':approve(d.kind,d.id);break;
   case 'reject':openModal('reject',{id:d.id,kind:d.kind});break;
   case 'order-status':act('ORDER_STATUS',{id:d.id,status:d.s}).then(r=>{if(r){toast(`Order ${d.id} → ${d.s}${d.s==='CONFIRMED'?' · stok berkurang':''}`);render();}});break;
+  case 'toggle-archived':state.showArchived=!state.showArchived;render();break;
   case 'barn-toggle':act('BARN_TOGGLE',{code:d.id}).then(r=>{if(r){toast(r.active?'Kandang diaktifkan.':'Kandang dinonaktifkan.');render();}});break;
   case 'user-toggle':act('USER_TOGGLE',{id:d.id}).then(r=>{if(r){toast(r.active?'Pengguna diaktifkan.':'Pengguna dinonaktifkan.');render();}});break;
   case 'export':toast(`${d.what} (${d.fmt||'PDF'}) — export akan tersedia di fase Laporan.`,'warn');break;
@@ -115,6 +116,7 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
   case 'submit-weigh':{if(!needPhoto(f))return;const r=await act('WEIGHT',{n:+v.n,total:+v.total,barn:v.barn},file);if(r){closeModal();toast(`Timbang dicatat. Rata-rata ${num(r.avg,2)} kg.`);render();}break;}
   case 'submit-health':{const r=await act('HEALTH',{barn:v.barn,type:v.type,item:v.item,dose:v.dose,note:v.note});if(r){closeModal();toast('Tindakan kesehatan dicatat.');render();}break;}
   case 'submit-user':{const r=await act('USER_CREATE',{name:v.name,role:v.role,barn:v.barn||undefined,phone:v.phone,email:v.email||undefined,password:v.password});if(r){closeModal();toast(`Pengguna ${v.name} dibuat. Sampaikan password awalnya langsung ke yang bersangkutan.`);render();}break;}
+  case 'submit-user-delete':{const r=await act('USER_DELETE',{id:f.dataset.id});if(r){closeModal();toast(r.removed?`${r.name} dihapus permanen.`:`${r.name} diarsipkan \u2014 riwayatnya tetap tersimpan.`);render();}break;}
   case 'submit-barn':{const r=await act('BARN_CREATE',{code:(v.code||'').toUpperCase(),name:v.name,capacity:+v.capacity,note:v.note||undefined});if(r){closeModal();toast(`${v.name} ditambahkan.`);render();}break;}
   case 'submit-barn-edit':{const r=await act('BARN_UPDATE',{code:f.dataset.id,name:v.name,capacity:+v.capacity,note:v.note||''});if(r){closeModal();toast('Data kandang diperbarui.');render();}break;}
   case 'submit-user-edit':{const r=await act('USER_UPDATE',{id:f.dataset.id,name:v.name,role:v.role,barn:v.barn||undefined,phone:v.phone,email:v.email||''});if(r){closeModal();toast('Data pengguna diperbarui.');render();}break;}

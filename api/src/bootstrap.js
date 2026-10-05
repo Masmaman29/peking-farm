@@ -17,7 +17,7 @@ export async function buildBootstrap(user) {
   const bcode = Object.fromEntries(barns.map(b => [b.id, b.code]));
   const cycle = await one(`SELECT * FROM cycle WHERE farm_id=$1 AND status='ACTIVE' ORDER BY dod_date DESC LIMIT 1`, [farm.id]);
   const prevCycles = await rows(`SELECT * FROM cycle WHERE farm_id=$1 AND status<>'ACTIVE' ORDER BY dod_date DESC`, [farm.id]);
-  const users = await rows(`SELECT id,name,role,barn_id,is_active,phone,email,last_login_at FROM app_user WHERE farm_id=$1 ORDER BY role,name`, [farm.id]);
+  const users = await rows(`SELECT id,name,role,barn_id,is_active,phone,email,last_login_at,archived_at FROM app_user WHERE farm_id=$1 ORDER BY role,name`, [farm.id]);
 
   const popTx = cycle ? await rows(`SELECT id,occurred_at,type,barn_id,qty,created_by,ref_type,ref_id FROM population_tx WHERE cycle_id=$1 ORDER BY occurred_at`, [cycle.id]) : [];
   const mortality = cycle ? await rows(`SELECT m.*, (SELECT file_url FROM attachment a WHERE a.entity_type='mortality' AND a.entity_id=m.id ORDER BY version DESC LIMIT 1) photo
@@ -73,7 +73,7 @@ export async function buildBootstrap(user) {
       ambangApprovalRp: +cfg.ambang_approval_rp, targetCurve: cfg.kurva_target_bobot,
     },
     farm: { id: farm.id, name: farm.name, location: farm.location },
-    users: users.map(u => ({ id: u.id, name: u.name, role: u.role, barn: bcode[u.barn_id] || null, active: u.is_active, phone: u.phone, email: u.email, lastLogin: u.last_login_at })),
+    users: users.map(u => ({ id: u.id, name: u.name, role: u.role, barn: bcode[u.barn_id] || null, active: u.is_active, phone: u.phone, email: u.email, lastLogin: u.last_login_at, archived: !!u.archived_at })),
     barns: barns.map(b => ({ id: b.code, uuid: b.id, name: b.name, cap: b.capacity, note: b.note, active: b.is_active })),
     cycle: cycle ? { id: cycle.id, code: cycle.code, breed: cycle.breed, status: 'AKTIF', dodDate: cycle.dod_date, dodQty: cycle.dod_qty, dodPrice: +cycle.dod_price, dodWeight: +cycle.dod_weight_kg, targetDays: cycle.target_days, targetWeight: [+cycle.target_weight_min, +cycle.target_weight_max], targetMort: +cycle.target_mort_pct, stage: cycle.stage, createdBy: cycle.created_by, createdAt: cycle.created_at } : null,
     prevCycles: prevCycles.map(c => ({ id: c.id, code: c.code, breed: c.breed, status: 'SELESAI', dodDate: c.dod_date, dodQty: c.dod_qty })),

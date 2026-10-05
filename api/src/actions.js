@@ -374,6 +374,39 @@ export const ACTIONS = {
     await audit(c, user.id, 'UPDATE', 'app_user', `Data ${v.name} diubah${diff.length ? ' \u2014 ' + diff.join('; ') : ''}`, v.id, { name: t.name, phone: t.phone, email: t.email, role: t.role }, { name: v.name, phone: v.phone, email: v.email || null, role: v.role });
     return {};
   },
+  async USER_DELETE(c, p, user) {
+    need(user, ['OWNER']);
+    const v = z.object({ id: uuid }).parse(p);
+    if (v.id === user.id) throw new ActionError('Tidak bisa menghapus akun sendiri.');
+    const t = (await c.query('SELECT id,name,role,archived_at FROM app_user WHERE id=$1', [v.id])).rows[0];
+    if (!t) throw new ActionError('Pengguna tidak ditemukan.');
+    if (t.archived_at) throw new ActionError(`${t.name} sudah diarsipkan.`);
+    if (t.role === 'OWNER') {
+      const n = +(await c.query(`SELECT count(*) n FROM app_user WHERE role='OWNER' AND is_active AND archived_at IS NULL AND id<>$1`, [v.id])).rows[0].n;
+      if (!n) deny('Harus tersisa minimal satu OWNER aktif.');
+    }
+    await c.query('DELETE FROM session WHERE user_id=$1', [v.id]);
+
+    // Coba hapus betulan. Kalau baris ini masih dirujuk riwayat mana pun
+    // (transaksi, lampiran, approval, atau audit log), PostgreSQL menolak —
+    // dan itu memang yang kita mau: riwayat tidak boleh jadi yatim.
+    let removed = false;
+    await c.query('SAVEPOINT try_delete');
+    try {
+      await c.query('DELETE FROM app_user WHERE id=$1', [v.id]);
+      await c.query('RELEASE SAVEPOINT try_delete');
+      removed = true;
+    } catch (e) {
+      await c.query('ROLLBACK TO SAVEPOINT try_delete');
+      if (e.code !== '23503') throw e;
+      await c.query('UPDATE app_user SET archived_at=now(), is_active=false, password_hash=NULL, updated_at=now() WHERE id=$1', [v.id]);
+    }
+    await audit(c, user.id, removed ? 'DELETE' : 'UPDATE', 'app_user',
+      removed ? `Pengguna ${t.name} (${t.role}) dihapus permanen \u2014 belum punya riwayat apa pun`
+              : `Pengguna ${t.name} (${t.role}) diarsipkan \u2014 masih terpakai di riwayat, baris tidak dihapus`,
+      v.id, { name: t.name, role: t.role }, null);
+    return { removed, name: t.name };
+  },
   async USER_PASSWORD(c, p, user, _file, req) {
     const v = z.object({ id: uuid, current: z.string().optional(), password: z.string().min(8, 'Password minimal 8 karakter.') }).parse(p);
     const t = (await c.query('SELECT id,name,role,password_hash FROM app_user WHERE id=$1', [v.id])).rows[0];
