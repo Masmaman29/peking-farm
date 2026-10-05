@@ -38,11 +38,16 @@ async function siteBoot(){
 function siteExit(){Object.assign(calc,calcOrig);delete calc.stockStatus;calc.stockStatus=STOCK_STATUS_ORIG;DB=state.user?DB:null;state.view=state.user?'app':'login';if(state.user)loadDB().then(render);else render();}
 const STOCK_STATUS_ORIG=calc.stockStatus;
 
+function cycleCalc(){const f=document.getElementById('c-form');if(!f)return;
+ const tot=[...f.querySelectorAll('input[name^=barn_]')].reduce((a,i)=>a+(+i.value||0),0);
+ const pr=+f.querySelector('[name=price]').value||0;
+ const t=document.getElementById('c-total'),c=document.getElementById('c-cost');
+ if(t)t.textContent=num(tot)+' ekor';if(c)c.textContent=rp(tot*pr);}
 /* ---------------- EVENT: CLICK ---------------- */
 document.addEventListener('click',e=>{
  const el=e.target.closest('[data-act]');if(!el)return;const a=el.dataset.act;const d=el.dataset;
  if(a==='modal-close-bg'||a==='ai-close-bg'){if(e.target===el){if(a==='ai-close-bg')state.aiOpen=false;else state.modal=null;renderLayer();}return;}
- if(['search-input','audit-q','audit-user','audit-action','repbarn','repday','order-product','site-product','order-calc','site-calc','calc-avg','photo','order-customer'].includes(a))return;
+ if(['search-input','audit-q','audit-user','audit-action','repbarn','repday','order-product','site-product','order-calc','site-calc','calc-avg','photo','order-customer','cycle-calc','prod-src'].includes(a))return;
  switch(a){
   case 'go':go(d.page);break;
   case 'side-open':state.sideOpen=true;render();break;
@@ -82,11 +87,14 @@ document.addEventListener('change',e=>{const el=e.target.closest('[data-act]');i
  if(a==='order-product'){const p=DB.products.find(x=>x.id===el.value);document.getElementById('o-p').value=MASTER[p.priceKey]||0;orderCalc();}
  if(a==='order-customer'){document.getElementById('newcust').hidden=el.value!=='NEW';}
  if(a==='site-product'){openModal('siteorder',{product:el.value});}
+ if(a==='prod-src'){const box=document.getElementById('p-inv');if(box)box.hidden=el.value!=='INVENTORY';}
+ if(a==='cycle-calc')cycleCalc();
 });
 document.addEventListener('input',e=>{const el=e.target;const a=el.dataset.act;
  if(a==='audit-q'){state.filters.q=el.value;const c=document.getElementById('content');const y=c.scrollTop;render();document.getElementById('content').scrollTop=y;const i=document.querySelector('[data-act=audit-q]');i.focus();i.setSelectionRange(i.value.length,i.value.length);}
  if(a==='order-calc')orderCalc();
  if(a==='site-calc'){const f=el.form;const p=DB.products.find(x=>x.id===f.product.value);const q=+f.qty.value||0;document.getElementById('s-w').textContent=num(q*p.avgW,1)+' kg';document.getElementById('s-t').textContent=rp(q*p.avgW*MASTER[p.priceKg]);}
+ if(a==='cycle-calc')cycleCalc();
  if(a==='calc-avg'){const n=+document.getElementById('ak-n').value,t=+document.getElementById('ak-total').value;document.getElementById('avg-val').textContent=n&&t?num(t/n,2)+' kg/ekor':'—';}
 });
 document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='k'){e.preventDefault();const s=document.getElementById('global-search');if(s)s.focus();}if(e.key==='Escape'){state.modal=null;state.aiOpen=false;state.notif=false;renderLayer();}
@@ -117,6 +125,19 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
   case 'submit-health':{const r=await act('HEALTH',{barn:v.barn,type:v.type,item:v.item,dose:v.dose,note:v.note});if(r){closeModal();toast('Tindakan kesehatan dicatat.');render();}break;}
   case 'submit-user':{const r=await act('USER_CREATE',{name:v.name,role:v.role,barn:v.barn||undefined,phone:v.phone,email:v.email||undefined,password:v.password});if(r){closeModal();toast(`Pengguna ${v.name} dibuat. Sampaikan password awalnya langsung ke yang bersangkutan.`);render();}break;}
   case 'submit-user-delete':{const r=await act('USER_DELETE',{id:f.dataset.id});if(r){closeModal();toast(r.removed?`${r.name} dihapus permanen.`:`${r.name} diarsipkan \u2014 riwayatnya tetap tersimpan.`);render();}break;}
+  case 'submit-cycle':{const barns=Object.keys(v).filter(k=>k.startsWith('barn_')).map(k=>({code:k.slice(5),qty:+v[k]||0})).filter(x=>x.qty>0);
+    if(!barns.length){toast('Isi jumlah DOD minimal di satu kandang.','err');return;}
+    const r=await act('CYCLE_CREATE',{dodDate:v.date,dodPrice:+v.price,breed:v.breed,targetDays:+v.days,barns});
+    if(r){closeModal();toast(`Siklus ${r.code} dimulai.`);render();}break;}
+  case 'submit-product':{const r=await act('PRODUCT_SAVE',{id:f.dataset.id||undefined,name:v.name,type:v.type,description:v.description||undefined,pricePerKg:+v.pricePerKg,minOrder:+v.minOrder,avgWeightKg:+v.avgWeightKg,stockSource:v.stockSource,inventoryId:v.stockSource==='INVENTORY'?v.inventoryId:undefined,published:v.published==='true'});
+    if(r){closeModal();toast('Produk disimpan.');render();}break;}
+  case 'submit-invitem':{const r=await act('INVENTORY_SAVE',{id:f.dataset.id||undefined,name:v.name,category:v.category,unit:v.unit,minQty:+v.minQty||0});
+    if(r){closeModal();toast('Item stok disimpan.');render();}break;}
+  case 'submit-setup':{if(v.password!==v.confirm){toast('Password dan ulangannya tidak sama.','err');return;}state.busy=true;render();
+    try{await api('/public/setup',{method:'POST',body:JSON.stringify({farmName:v.farmName,location:v.location,name:v.name,phone:v.phone,email:v.email,password:v.password})});
+      toast('Akun Owner dibuat. Silakan masuk.');state.view='login';}
+    catch(err){toast(err.message||'Gagal membuat akun.','err');}
+    finally{state.busy=false;render();}break;}
   case 'submit-barn':{const r=await act('BARN_CREATE',{code:(v.code||'').toUpperCase(),name:v.name,capacity:+v.capacity,note:v.note||undefined});if(r){closeModal();toast(`${v.name} ditambahkan.`);render();}break;}
   case 'submit-barn-edit':{const r=await act('BARN_UPDATE',{code:f.dataset.id,name:v.name,capacity:+v.capacity,note:v.note||''});if(r){closeModal();toast('Data kandang diperbarui.');render();}break;}
   case 'submit-user-edit':{const r=await act('USER_UPDATE',{id:f.dataset.id,name:v.name,role:v.role,barn:v.barn||undefined,phone:v.phone,email:v.email||''});if(r){closeModal();toast('Data pengguna diperbarui.');render();}break;}
@@ -135,7 +156,8 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
   try{const me=await api('/auth/me');await loadDB();state.user=DB.users.find(x=>x.id===me.id)||me;state.page=me.role==='ANAK_KANDANG'?'ak-home':'dashboard';state.view='app';}
   catch{
     state.user=null;state.view='login';
-    try{state.publicStats=await api('/public/farm');}catch{state.publicStats={};}
+    try{const st=await api('/public/setup');if(st.needed)state.view='setup';}catch{}
+    if(state.view!=='setup'){try{state.publicStats=await api('/public/farm');}catch{state.publicStats={};}}
   }
   render();
 })();

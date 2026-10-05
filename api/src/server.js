@@ -104,6 +104,29 @@ app.get('/api/v1/public/farm', async () => {
   const c = await one(`SELECT c.code, c.dod_date + c.target_days AS harvest, p.population, w.avg_kg, p.deaths::float/c.dod_qty*100 mort FROM cycle c JOIN v_population_cycle p ON p.cycle_id=c.id LEFT JOIN v_weight_latest w ON w.cycle_id=c.id WHERE c.status='ACTIVE' LIMIT 1`);
   return c ? { cycle: c.code, harvestDate: c.harvest, population: c.population, avgWeightKg: c.avg_kg ? +c.avg_kg : null, mortalityPct: +(+c.mort).toFixed(1) } : {};
 });
+/* ---------- setup awal: hanya hidup selama belum ada satu pun pengguna ---------- */
+async function setupNeeded() { return +(await one('SELECT count(*) n FROM app_user')).n === 0; }
+app.get('/api/v1/public/setup', async () => ({ needed: await setupNeeded() }));
+app.post('/api/v1/public/setup', { config: { rateLimit: { max: 5, timeWindow: '15 minutes' } } }, async (req, reply) => {
+  if (!(await setupNeeded())) return reply.code(409).send({ code: 'ALREADY_SETUP', message: 'Sistem sudah punya pengguna. Silakan login.' });
+  const { farmName, location, name, phone, email, password } = req.body || {};
+  if (!name || String(name).trim().length < 2) return reply.code(400).send({ code: 'VALIDATION', message: 'Nama minimal 2 karakter.' });
+  if (!phone || String(phone).trim().length < 6) return reply.code(400).send({ code: 'VALIDATION', message: 'Nomor HP tidak valid.' });
+  if (!password || String(password).length < 8) return reply.code(400).send({ code: 'VALIDATION', message: 'Password minimal 8 karakter.' });
+  const hash = await argon2.hash(String(password), { type: argon2.argon2id });
+  const out = await tx(null, async c => {
+    if (+(await c.query('SELECT count(*) n FROM app_user')).rows[0].n !== 0) throw new Error('race');
+    let farm = (await c.query('SELECT id FROM farm LIMIT 1')).rows[0];
+    if (!farm) farm = (await c.query(`INSERT INTO farm(name,location) VALUES (COALESCE(NULLIF($1,''),'AR-FARM'), NULLIF($2,'')) RETURNING id`,
+      [String(farmName || '').trim(), String(location || '').trim()])).rows[0];
+    const u = (await c.query(`INSERT INTO app_user(farm_id,name,phone,email,role,password_hash,password_changed_at)
+      VALUES ($1,$2,$3,NULLIF($4,''),'OWNER',$5,now()) RETURNING id,name,role`,
+      [farm.id, String(name).trim(), String(phone).trim(), String(email || '').trim(), hash])).rows[0];
+    await audit(c, u.id, 'CREATE', 'app_user', `Setup awal \u2014 akun Owner pertama (${u.name}) dibuat`, u.id, null, { role: 'OWNER' });
+    return u;
+  });
+  return { ok: true, result: { id: out.id, name: out.name } };
+});
 app.post('/api/v1/public/orders', { config: { rateLimit: { max: 5, timeWindow: '10 minutes' } } }, async req => ({ ok: true, result: await publicOrder(req.body || {}, req) }));
 
 /* ---------- SPA fallback ---------- */

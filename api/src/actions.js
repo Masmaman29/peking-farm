@@ -297,6 +297,100 @@ export const ACTIONS = {
     return {};
   },
 
+  /* ---------------- SIKLUS ---------------- */
+  async CYCLE_CREATE(c, p, user) {
+    need(user, ['OWNER', 'MANAGER']);
+    const v = z.object({
+      dodDate: z.string().min(8),
+      dodPrice: z.number().nonnegative(),
+      breed: z.string().trim().min(2).optional(),
+      targetDays: z.number().int().positive().max(200).optional(),
+      barns: z.array(z.object({ code: z.string().min(1), qty: z.number().int().positive() })).min(1, 'Minimal satu kandang diisi.')
+    }).parse(p);
+
+    const farm = (await c.query('SELECT id FROM farm LIMIT 1')).rows[0];
+    if (!farm) throw new ActionError('Data farm belum ada.');
+
+    // satu siklus aktif pada satu waktu per kandang
+    const busy = (await c.query(`
+      SELECT b.name FROM barn b
+      JOIN v_population v ON v.barn_id=b.id
+      JOIN cycle cy ON cy.id=v.cycle_id AND cy.status='ACTIVE'
+      WHERE b.code = ANY($1) GROUP BY b.name HAVING SUM(v.population) > 0`, [v.barns.map(x => x.code.toUpperCase())])).rows;
+    if (busy.length) throw new ActionError(`Masih ada ternak di ${busy.map(r => r.name).join(', ')}. Kosongkan dulu sebelum memulai siklus baru.`);
+
+    const n = +(await c.query('SELECT count(*) n FROM cycle WHERE farm_id=$1', [farm.id])).rows[0].n;
+    const code = '#' + String(n + 1).padStart(3, '0');
+    const curve = (await c.query(`SELECT value FROM master_config WHERE key='kurva_target_bobot'`)).rows[0]?.value || [];
+    const qty = v.barns.reduce((a, x) => a + x.qty, 0);
+
+    const cy = (await c.query(`INSERT INTO cycle(farm_id,code,breed,dod_date,dod_qty,dod_price,target_curve,target_days,status,stage,locked,created_by)
+      VALUES ($1,$2,COALESCE($3,'Bebek Peking'),$4,$5,$6,$7,COALESCE($8,45),'ACTIVE','DOD_IN',true,$9) RETURNING id`,
+      [farm.id, code, v.breed || null, v.dodDate, qty, v.dodPrice, JSON.stringify(curve), v.targetDays || null, user.id])).rows[0].id;
+
+    for (const b of v.barns) {
+      const bar = (await c.query('SELECT id,name,capacity FROM barn WHERE code=$1 AND is_active', [b.code.toUpperCase()])).rows[0];
+      if (!bar) throw new ActionError(`Kandang ${b.code} tidak ditemukan atau nonaktif.`);
+      if (b.qty > bar.capacity) throw new ActionError(`${bar.name} hanya muat ${bar.capacity} ekor, diisi ${b.qty}.`);
+      await c.query(`INSERT INTO population_tx(cycle_id,barn_id,type,qty,ref_type,ref_id,occurred_at,created_by)
+        VALUES ($1,$2,'DOD_IN',$3,'cycle',$1,$4,$5)`, [cy, bar.id, b.qty, v.dodDate, user.id]);
+    }
+    await audit(c, user.id, 'CREATE', 'cycle', `Siklus ${code} dimulai \u2014 ${qty} ekor DOD @ ${v.dodPrice}, ${v.barns.length} kandang`, cy, null, { code, qty, dodPrice: v.dodPrice });
+    return { id: cy, code };
+  },
+
+  /* ---------------- MASTER PRODUK & STOK ---------------- */
+  async PRODUCT_SAVE(c, p, user) {
+    need(user, ['OWNER', 'ADMIN']);
+    const v = z.object({
+      id: uuid.optional(),
+      name: z.string().trim().min(2),
+      type: z.enum(['LIVE', 'CUT', 'CARCASS']),
+      description: z.string().trim().optional(),
+      pricePerKg: z.number().nonnegative(),
+      minOrder: z.number().int().positive(),
+      avgWeightKg: z.number().positive(),
+      stockSource: z.enum(['POPULATION', 'INVENTORY']),
+      inventoryId: uuid.optional(),
+      published: z.boolean().optional()
+    }).parse(p);
+    if (v.stockSource === 'INVENTORY' && !v.inventoryId) throw new ActionError('Produk dari gudang harus memilih item stok.');
+    const farm = (await c.query('SELECT id FROM farm LIMIT 1')).rows[0];
+    if (v.id) {
+      await c.query(`UPDATE product SET name=$1,type=$2,description=NULLIF($3,''),price_per_kg=$4,min_order=$5,avg_weight_kg=$6,stock_source=$7,inventory_id=$8,is_published=COALESCE($9,is_published),updated_at=now() WHERE id=$10`,
+        [v.name, v.type, v.description || '', v.pricePerKg, v.minOrder, v.avgWeightKg, v.stockSource, v.stockSource === 'INVENTORY' ? v.inventoryId : null, v.published ?? null, v.id]);
+      await audit(c, user.id, 'UPDATE', 'product', `Produk ${v.name} diperbarui \u2014 ${v.pricePerKg}/kg`, v.id);
+      return { id: v.id };
+    }
+    const r = await c.query(`INSERT INTO product(farm_id,name,type,description,price_per_kg,min_order,avg_weight_kg,stock_source,inventory_id,is_published)
+      VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7,$8,$9,COALESCE($10,true)) RETURNING id`,
+      [farm.id, v.name, v.type, v.description || '', v.pricePerKg, v.minOrder, v.avgWeightKg, v.stockSource, v.stockSource === 'INVENTORY' ? v.inventoryId : null, v.published ?? null]);
+    await audit(c, user.id, 'CREATE', 'product', `Produk ${v.name} dibuat \u2014 ${v.pricePerKg}/kg`, r.rows[0].id);
+    return { id: r.rows[0].id };
+  },
+  async INVENTORY_SAVE(c, p, user) {
+    need(user, ['OWNER', 'ADMIN']);
+    const v = z.object({
+      id: uuid.optional(),
+      name: z.string().trim().min(2),
+      category: z.string().trim().min(2),
+      unit: z.string().trim().min(1),
+      minQty: z.number().nonnegative().optional(),
+      avgWeightKg: z.number().positive().optional()
+    }).parse(p);
+    const farm = (await c.query('SELECT id FROM farm LIMIT 1')).rows[0];
+    if (v.id) {
+      await c.query('UPDATE inventory SET name=$1,category=$2,unit=$3,min_qty=COALESCE($4,min_qty),avg_weight_kg=$5 WHERE id=$6',
+        [v.name, v.category, v.unit, v.minQty ?? null, v.avgWeightKg ?? null, v.id]);
+      await audit(c, user.id, 'UPDATE', 'inventory', `Item stok ${v.name} diperbarui`, v.id);
+      return { id: v.id };
+    }
+    const r = await c.query('INSERT INTO inventory(farm_id,name,category,unit,min_qty,avg_weight_kg) VALUES ($1,$2,$3,$4,COALESCE($5,0),$6) RETURNING id',
+      [farm.id, v.name, v.category, v.unit, v.minQty ?? null, v.avgWeightKg ?? null]);
+    await audit(c, user.id, 'CREATE', 'inventory', `Item stok ${v.name} (${v.category}) dibuat`, r.rows[0].id);
+    return { id: r.rows[0].id };
+  },
+
   /* ---------------- KANDANG ---------------- */
   async BARN_CREATE(c, p, user) {
     need(user, ['OWNER']);
