@@ -1,3 +1,5 @@
+const SITE_ONLY = !(location.hostname.startsWith('os.') || ['localhost','127.0.0.1',''].includes(location.hostname));
+
 /* ---------------- KONEKSI KE SERVER ---------------- */
 const num_=v=>v===''||v==null?undefined:Number(v);
 async function act(type,payload,file){
@@ -35,7 +37,10 @@ async function siteBoot(){
   calc.stockStatus=p=>({k:p.pubStatus==='HABIS'?'out':p.pubStatus==='PRE-ORDER'?'pre':p.pubStatus==='STOK TERBATAS'?'low':'ok',t:p.pubStatus==='PRE-ORDER'?'PRE-ORDER · PANEN '+fmtDate(harvest).toUpperCase():p.pubStatus});
   state.view='site';render();
 }
-function siteExit(){Object.assign(calc,calcOrig);delete calc.stockStatus;calc.stockStatus=STOCK_STATUS_ORIG;DB=state.user?DB:null;state.view=state.user?'app':'login';if(state.user)loadDB().then(render);else render();}
+function siteExit(){
+ if(SITE_ONLY){location.href='https://os.'+location.hostname.replace(/^www\./,'')+'/';return;}
+ return siteExitApp();}
+function siteExitApp(){Object.assign(calc,calcOrig);delete calc.stockStatus;calc.stockStatus=STOCK_STATUS_ORIG;DB=state.user?DB:null;state.view=state.user?'app':'login';if(state.user)loadDB().then(render);else render();}
 const STOCK_STATUS_ORIG=calc.stockStatus;
 
 function cycleCalc(){const f=document.getElementById('c-form');if(!f)return;
@@ -152,7 +157,7 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
 
 /* ---------------- BOOT ---------------- */
 (async function boot(){
-  if(location.hash==='#website'){return siteBoot();}
+  if(location.hash==='#website' || SITE_ONLY){return siteBoot();}
   try{const me=await api('/auth/me');await loadDB();state.user=DB.users.find(x=>x.id===me.id)||me;state.page=me.role==='ANAK_KANDANG'?'ak-home':'dashboard';state.view='app';}
   catch{
     state.user=null;state.view='login';
