@@ -38,7 +38,7 @@ function hydrate(b){
   const d=x=>{if(!x)return x;['date','dodDate','createdAt','requestedAt','decidedAt','lastLogin','pickup'].forEach(k=>{if(x[k]!==undefined)x[k]=toDate(x[k]);});if(x.versions)x.versions.forEach(v=>v.date=toDate(v.date));return x;};
   ['users','popTx','mortality','feedRecords','feedPurchases','feedAdjust','feedOpname','weights','health','barnCond','expenses','invTx','orders','corrections','audit','prevCycles'].forEach(k=>(b[k]||[]).forEach(d));
   if(b.cycle){d(b.cycle);b.cycle.dodDate.setHours(0,0,0,0);}
-  b.products.forEach(p=>p.priceKg=p.priceKey);
+  b.products.forEach(p=>p.priceKg=p.price);
   return b;
 }
 async function loadDB(){const b=await api('/bootstrap');DB=hydrate(b);MASTER=b.master;DEMO_TODAY=new Date(b.now);return DB;}
@@ -76,7 +76,8 @@ const calc = {
   modal(){return Object.values(calc.costByCat()).reduce((a,b)=>a+b,0);},
   projectedRemainingCost(){const daysLeft=Math.max(0,DB.cycle.targetDays-calc.day());const feedNeed=daysLeft*calc.feedAvg7()*1.15;const feedShort=Math.max(0,feedNeed-calc.feedStockTheory());return feedShort*MASTER.hargaPakanKg+daysLeft/30*(2400000+480000+750000);},
   projectedPop(){const rate=calc.mortPct()/calc.day();const remain=DB.cycle.targetDays-calc.day();return Math.round(calc.population()*(1-rate/100*remain));},
-  estRevenue(){return calc.projectedPop()*MASTER.targetBobotMin*1.1*(MASTER.hargaJualHidupKg||0);},
+  livePrice(){const p=DB.products.find(x=>x.type==='LIVE')||DB.products[0];return p?+p.price||0:0;},
+  estRevenue(){return calc.projectedPop()*MASTER.targetBobotMin*1.1*calc.livePrice();},
   estProfit(){return calc.estRevenue()-calc.modal()-calc.projectedRemainingCost();},
   roi(){return calc.estProfit()/(calc.modal()+calc.projectedRemainingCost())*100;},
   salesRevenue(){return DB.orders.filter(o=>o.pay==='PAID').reduce((s,o)=>s+o.qty*(o.weight||o.qty*1.5)/o.qty*o.priceKg,0);},

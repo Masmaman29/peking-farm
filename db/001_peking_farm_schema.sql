@@ -751,9 +751,6 @@ GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO pf_app;
 INSERT INTO master_config(key,value,description) VALUES
  ('harga_dod',            '15000', 'Harga DOD (Rp/ekor)'),
  ('harga_pakan_kg',       '6800',  'Harga pakan default (Rp/kg)'),
- ('harga_jual_hidup_kg',  '45000', 'Harga jual hidup (Rp/kg)'),
- ('harga_jual_potong_kg', '52000', 'Harga jual potong (Rp/kg)'),
- ('harga_jual_karkas_kg', '58000', 'Harga jual karkas (Rp/kg)'),
  ('target_panen_hari',    '45',    'Target panen (hari)'),
  ('target_bobot',         '{"min":1.5,"max":1.8}', 'Target bobot panen (kg)'),
  ('target_mortalitas_pct','5',     'Target mortalitas maksimum (%)'),

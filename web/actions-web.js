@@ -84,7 +84,7 @@ document.addEventListener('change',e=>{const el=e.target.closest('[data-act]');i
  if(a==='photo'){const t=document.getElementById(el.dataset.target);const name=el.files&&el.files[0]?el.files[0].name:'';if(t&&name){t.classList.add('has');t.innerHTML=`${ic('check',20)}<div style="margin-top:6px;font-weight:700">${esc(name)}</div><small>Foto terlampir · ${fmtDT(new Date())}</small>`;}}
  if(a==='audit-user'){state.filters.au=el.value;render();}if(a==='audit-action'){state.filters.aa=el.value;render();}
  if(a==='repbarn'){state.filters.barn=el.value;render();}if(a==='repday'){state.filters.day=+el.value;render();}
- if(a==='order-product'){const p=DB.products.find(x=>x.id===el.value);document.getElementById('o-p').value=MASTER[p.priceKey]||0;orderCalc();}
+ if(a==='order-product'){const p=DB.products.find(x=>x.id===el.value);document.getElementById('o-p').value=p.price||0;orderCalc();}
  if(a==='order-customer'){document.getElementById('newcust').hidden=el.value!=='NEW';}
  if(a==='site-product'){openModal('siteorder',{product:el.value});}
  if(a==='prod-src'){const box=document.getElementById('p-inv');if(box)box.hidden=el.value!=='INVENTORY';}
@@ -93,7 +93,7 @@ document.addEventListener('change',e=>{const el=e.target.closest('[data-act]');i
 document.addEventListener('input',e=>{const el=e.target;const a=el.dataset.act;
  if(a==='audit-q'){state.filters.q=el.value;const c=document.getElementById('content');const y=c.scrollTop;render();document.getElementById('content').scrollTop=y;const i=document.querySelector('[data-act=audit-q]');i.focus();i.setSelectionRange(i.value.length,i.value.length);}
  if(a==='order-calc')orderCalc();
- if(a==='site-calc'){const f=el.form;const p=DB.products.find(x=>x.id===f.product.value);const q=+f.qty.value||0;document.getElementById('s-w').textContent=num(q*p.avgW,1)+' kg';document.getElementById('s-t').textContent=rp(q*p.avgW*MASTER[p.priceKg]);}
+ if(a==='site-calc'){const f=el.form;const p=DB.products.find(x=>x.id===f.product.value);const q=+f.qty.value||0;document.getElementById('s-w').textContent=num(q*p.avgW,1)+' kg';document.getElementById('s-t').textContent=rp(q*p.avgW*p.price);}
  if(a==='cycle-calc')cycleCalc();
  if(a==='calc-avg'){const n=+document.getElementById('ak-n').value,t=+document.getElementById('ak-total').value;document.getElementById('avg-val').textContent=n&&t?num(t/n,2)+' kg/ekor':'—';}
 });

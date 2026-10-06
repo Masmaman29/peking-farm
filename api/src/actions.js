@@ -530,7 +530,7 @@ export const ACTIONS = {
   },
   async CONFIG_SAVE(c, p, user) {
     need(user, ['OWNER']);
-    const map = { hargaDOD: 'harga_dod', hargaPakanKg: 'harga_pakan_kg', hargaJualHidupKg: 'harga_jual_hidup_kg', hargaJualPotongKg: 'harga_jual_potong_kg', hargaJualKarkasKg: 'harga_jual_karkas_kg', targetPanenHari: 'target_panen_hari', targetMortalitasPct: 'target_mortalitas_pct', minStokPakanHari: 'min_stok_pakan_hari' };
+    const map = { hargaDOD: 'harga_dod', hargaPakanKg: 'harga_pakan_kg', targetPanenHari: 'target_panen_hari', targetMortalitasPct: 'target_mortalitas_pct', minStokPakanHari: 'min_stok_pakan_hari' };
     const changes = [];
     for (const [k, key] of Object.entries(map)) if (p[k] !== undefined) {
       const val = z.number().nonnegative().parse(+p[k]);
