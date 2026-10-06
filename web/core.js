@@ -12,8 +12,8 @@ const fmtLong = d=>d.toLocaleDateString('id-ID',{day:'numeric',month:'long',year
 const rp = n=>'Rp '+Math.round(n).toLocaleString('id-ID');
 const num = (n,dec=0)=>Number(n).toLocaleString('id-ID',{minimumFractionDigits:dec,maximumFractionDigits:dec});
 const pct = (n,dec=1)=>num(n,dec)+'%';
-const dayOf = d=>Math.floor((d-DB.cycle.dodDate)/86400000)+1;
-const dateOfDay = n=>new Date(DB.cycle.dodDate.getTime()+(n-1)*86400000);
+const dayOf = d=>DB.cycle?Math.floor((d-DB.cycle.dodDate)/86400000)+1:0;
+const dateOfDay = n=>DB.cycle?new Date(DB.cycle.dodDate.getTime()+(n-1)*86400000):new Date();
 const esc = s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let _id = 1000; const nid = p=>p+'-'+(++_id);
 
@@ -45,7 +45,7 @@ async function loadDB(){const b=await api('/bootstrap');DB=hydrate(b);MASTER=b.m
 let MASTER={};let DEMO_TODAY=new Date();
 /* ---------------- DERIVED CALCULATIONS (single source of truth) ---------------- */
 const calc = {
-  day(){return dayOf(DEMO_TODAY);},
+  day(){return DB.cycle?dayOf(DEMO_TODAY):0;},
   popTxUpTo(date){return DB.popTx.filter(t=>t.date<=date);},
   population(barn=null,date=DEMO_TODAY){return DB.popTx.filter(t=>t.date<=date&&(!barn||t.barn===barn)).reduce((s,t)=>s+t.qty,0);},
   popBalance(){const g=t=>DB.popTx.filter(x=>x.type===t).reduce((s,x)=>s+Math.abs(x.qty),0);return{dod:g('DOD_MASUK'),tIn:g('TRANSFER_MASUK'),mati:g('KEMATIAN'),jual:g('PENJUALAN'),tOut:g('TRANSFER_KELUAR'),akhir:calc.population()};},
@@ -82,10 +82,10 @@ const calc = {
   salesRevenue(){return DB.orders.filter(o=>o.pay==='PAID').reduce((s,o)=>s+o.qty*(o.weight||o.qty*1.5)/o.qty*o.priceKg,0);},
   orderTotal(o){const w=o.weight||o.qty*(DB.products.find(p=>p.id===o.product).avgW);return w*o.priceKg;},
   productStock(p){if(p.stockFrom==='population')return calc.population();const it=DB.inventory.find(i=>i.id===p.stockFrom);return it?it.qty:0;},
-  stockStatus(p){const s=calc.productStock(p);if(s<=0)return{k:'out',t:'HABIS'};if(p.stockFrom==='population')return{k:'pre',t:'PRE-ORDER · PANEN '+fmtDate(dateOfDay(DB.cycle.targetDays)).toUpperCase()};if(s<=p.minOrder*2)return{k:'low',t:'STOK TERBATAS'};return{k:'ok',t:'TERSEDIA'};},
+  stockStatus(p){const s=calc.productStock(p);if(s<=0)return{k:'out',t:'HABIS'};if(p.stockFrom==='population')return{k:'pre',t:DB.cycle?'PRE-ORDER · PANEN '+fmtDate(dateOfDay(DB.cycle.targetDays)).toUpperCase():'PRE-ORDER'};if(s<=p.minOrder*2)return{k:'low',t:'STOK TERBATAS'};return{k:'ok',t:'TERSEDIA'};},
   healthScore(){const gap=calc.weightGap()||0;const growth=Math.max(0,Math.min(100,100+gap*2));const f=calc.fcr();const fcrS=f?Math.max(0,Math.min(100,100-(f.fcr-2.0)*100)):70;const mortS=Math.max(0,100-calc.mortPct()/MASTER.targetMortalitasPct*30);const cond=DB.barnCond.filter(c=>dayOf(c.date)===calc.day()).every(c=>c.litter==='Kering')?95:90;const fd=calc.feedToday()/calc.feedAvg7();const feedS=Math.max(0,100-Math.abs(fd-1)*40);const items=[['Pertumbuhan',growth],['FCR',fcrS],['Mortalitas',mortS],['Kondisi Kandang',cond],['Konsumsi Pakan',feedS]];const score=Math.round(items.reduce((s,i)=>s+i[1],0)/items.length);return{score,items,status:score>=80?'NORMAL':score>=60?'WARNING':'CRITICAL'};},
   pendingApprovals(){const list=[];DB.corrections.filter(c=>c.status==='PENDING').forEach(c=>list.push({kind:'CORRECTION',id:c.id,date:c.requestedAt,title:`Koreksi pakan ${c.oldVal} kg → ${c.newVal} kg`,sub:`Alasan: ${c.reason}`,by:c.requestedBy,ref:c}));DB.orders.filter(o=>o.status==='PENDING_APPROVAL').forEach(o=>list.push({kind:'ORDER',id:o.id,date:o.date,title:`Penjualan ${o.qty} ekor ${DB.products.find(p=>p.id===o.product).name.replace('Bebek Peking ','')}`,sub:`ke ${DB.customers.find(c=>c.id===o.customer).name} — ${rp(calc.orderTotal(o))}`,by:o.user,ref:o}));DB.feedPurchases.filter(p=>p.status==='PENDING').forEach(p=>list.push({kind:'PURCHASE',id:p.id,date:p.date,title:`Pembelian pakan ${num(p.qty)} kg`,sub:`${p.vendor}${p.price?' — '+rp(p.qty*p.price):''}`,by:p.user,ref:p}));DB.expenses.filter(e=>e.status==='PENDING').forEach(e=>list.push({kind:'EXPENSE',id:e.id,date:e.date,title:`Biaya ${e.cat} ${rp(e.amount)}`,sub:e.vendor,by:e.user,ref:e}));return list.sort((a,b)=>b.date-a.date);},
-  anomalies(){const out=[];const fd=calc.feedToday(),avg=calc.feedAvg7();const dev=(fd-avg)/avg*100;
+  anomalies(){if(!DB.cycle)return [];const out=[];const fd=calc.feedToday(),avg=calc.feedAvg7();const dev=(fd-avg)/avg*100;
     if(Math.abs(dev)>MASTER.batasPakanPct)out.push({id:'AN-FEED-DEV',sev:dev>0?'warn':'warn',title:`Konsumsi pakan hari ini ${num(Math.abs(dev))}% lebih ${dev>0?'tinggi':'rendah'} dari rata-rata 7 hari`,detail:`Hari ini ${num(fd)} kg vs rata-rata ${num(avg,1)} kg/hari. Cek apakah ada input ganda atau pemberian ekstra.`,date:DEMO_TODAY,page:'pakan',rule:'Deviasi >'+MASTER.batasPakanPct+'% dari rata-rata 7 hari'});
     const fdif=calc.feedDiff();if(fdif&&Math.abs(fdif.diff)>=10)out.push({id:'AN-FEED-DIFF',sev:'warn',title:`Selisih stok pakan ${num(Math.abs(fdif.diff))} kg dengan catatan transaksi`,detail:`Stok teoritis ${num(fdif.theory)} kg, hasil opname fisik ${num(fdif.op.physical)} kg (${fmtDT(fdif.op.date)}).`,date:fdif.op.date,page:'stok',rule:'Selisih opname ≥10 kg'});
     const gap=calc.weightGap();if(gap!=null&&gap<-3)out.push({id:'AN-WEIGHT',sev:'warn',title:`Bobot rata-rata tertinggal ${num(Math.abs(gap))}% dari target`,detail:`Aktual ${num(calc.avgWeight(),2)} kg vs target hari ke-${calc.day()} ${num(calc.target(calc.day()),2)} kg. 3 pengukuran terakhir naik lebih lambat dari kurva.`,date:DB.weights[DB.weights.length-1].date,page:'pertumbuhan',rule:'Gap bobot < -3% dari kurva target'});
@@ -97,7 +97,7 @@ const calc = {
     DB.inventory.filter(i=>i.qty<i.min).forEach(i=>out.push({id:'AN-INV-'+i.id,sev:'warn',title:`Stok ${i.name} di bawah minimum`,detail:`${num(i.qty)} ${i.unit} (minimum ${num(i.min)} ${i.unit}).`,date:DEMO_TODAY,page:'stok',rule:'Stok < minimum'}));
     if(calc.feedDaysLeft()<MASTER.minStokPakanHari)out.push({id:'AN-FEEDLOW',sev:'danger',title:`Stok pakan tersisa ${num(calc.feedDaysLeft(),0)} hari`,detail:'Segera ajukan pembelian.',date:DEMO_TODAY,page:'stok',rule:'Stok pakan < '+MASTER.minStokPakanHari+' hari'});
     return out.map(a=>Object.assign(a,{state:DB.anomalyState[a.id]||{status:'OPEN'}}));},
-  notifications(){const n=[];calc.pendingApprovals().forEach(p=>n.push({t:'approval',title:p.title,sub:'Menunggu persetujuan',date:p.date,page:'persetujuan'}));calc.anomalies().filter(a=>a.state.status==='OPEN').forEach(a=>n.push({t:'anomaly',title:a.title,sub:'Perlu verifikasi',date:a.date,page:'anomali'}));DB.orders.filter(o=>o.status==='NEW').forEach(o=>n.push({t:'order',title:'Order baru dari website '+o.id,sub:DB.customers.find(c=>c.id===o.customer).name,date:o.date,page:'penjualan'}));return n.sort((a,b)=>b.date-a.date);},
+  notifications(){if(!DB.cycle)return [];const n=[];calc.pendingApprovals().forEach(p=>n.push({t:'approval',title:p.title,sub:'Menunggu persetujuan',date:p.date,page:'persetujuan'}));calc.anomalies().filter(a=>a.state.status==='OPEN').forEach(a=>n.push({t:'anomaly',title:a.title,sub:'Perlu verifikasi',date:a.date,page:'anomali'}));DB.orders.filter(o=>o.status==='NEW').forEach(o=>n.push({t:'order',title:'Order baru dari website '+o.id,sub:DB.customers.find(c=>c.id===o.customer).name,date:o.date,page:'penjualan'}));return n.sort((a,b)=>b.date-a.date);},
 };
 const userName = id=>id==='SYSTEM'?'Sistem':(DB.users.find(u=>u.id===id)||{name:id}).name;
 const userRole = id=>id==='SYSTEM'?'':(DB.users.find(u=>u.id===id)||{role:''}).role;

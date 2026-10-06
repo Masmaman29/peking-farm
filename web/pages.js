@@ -127,7 +127,7 @@ function renderShell(content){
       <div style="margin-left:auto;position:relative"><button class="iconbtn" data-act="notif">${ic('bell')}${notifs.length?`<span class="dot">${notifs.length}</span>`:''}</button>
         ${state.notif?`<div class="notif-pop">${notifs.slice(0,7).map(n=>`<div class="it" data-act="go" data-page="${n.page}" style="cursor:pointer"><span style="color:${n.t==='anomaly'?'var(--warn)':n.t==='order'?'var(--gold)':'#F29390'}">${ic(n.t==='anomaly'?'alert':n.t==='order'?'cart':'check',16)}</span><div><b>${n.title}</b><small>${n.sub} · ${fmtDT(n.date)}</small></div></div>`).join('')||'<div class="it">Tidak ada notifikasi.</div>'}</div>`:''}
       </div>
-      <div class="cycle-pill">${ic('cycle',16)}<div><b>Siklus ${DB.cycle.code}</b><small>${fmtDate(DB.cycle.dodDate)} – ${fmtDate(dateOfDay(DB.cycle.targetDays))}</small></div></div>
+      <div class="cycle-pill">${ic('cycle',16)}<div>${DB.cycle?`<b>Siklus ${DB.cycle.code}</b><small>${fmtDate(DB.cycle.dodDate)} – ${fmtDate(dateOfDay(DB.cycle.targetDays))}</small>`:`<b>Belum ada siklus</b><small>Mulai siklus pertama</small>`}</div></div>
       <div class="user-pill"><span class="avatar">${u.name.split(' ').map(x=>x[0]).slice(0,2).join('')}</span><span><b style="display:block;font-size:13px;line-height:1.1">${u.name}</b><small style="color:var(--muted)">${ROLES[u.role].label}</small></span><button class="btn ghost sm" data-act="logout" title="Keluar">${ic('out',16)}</button></div>
     </header>
     <div class="content" id="content">${content}</div>
