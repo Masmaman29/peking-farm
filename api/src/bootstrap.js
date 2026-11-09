@@ -16,7 +16,9 @@ export async function buildBootstrap(user) {
   const barns = await rows('SELECT id,code,name,capacity,note,is_active FROM barn WHERE farm_id=$1 ORDER BY code', [farm.id]);
   const bcode = Object.fromEntries(barns.map(b => [b.id, b.code]));
   const cycle = await one(`SELECT * FROM cycle WHERE farm_id=$1 AND status='ACTIVE' ORDER BY dod_date DESC LIMIT 1`, [farm.id]);
-  const prevCycles = await rows(`SELECT * FROM cycle WHERE farm_id=$1 AND status<>'ACTIVE' ORDER BY dod_date DESC`, [farm.id]);
+  const prevCycles = await rows(`SELECT s.* FROM v_cycle_summary s JOIN cycle c ON c.id=s.cycle_id
+     WHERE c.farm_id=$1 AND c.status<>'ACTIVE' ORDER BY s.dod_date DESC`, [farm.id]);
+  const cycleSummary = cycle ? await one('SELECT * FROM v_cycle_summary WHERE cycle_id=$1', [cycle.id]) : null;
   const users = await rows(`SELECT id,name,role,barn_id,is_active,phone,email,last_login_at,archived_at FROM app_user WHERE farm_id=$1 ORDER BY role,name`, [farm.id]);
 
   const popTx = cycle ? await rows(`SELECT id,occurred_at,type,barn_id,qty,created_by,ref_type,ref_id FROM population_tx WHERE cycle_id=$1 ORDER BY occurred_at`, [cycle.id]) : [];
@@ -75,8 +77,26 @@ export async function buildBootstrap(user) {
     users: users.map(u => ({ id: u.id, name: u.name, role: u.role, barn: bcode[u.barn_id] || null, active: u.is_active, phone: u.phone, email: u.email, lastLogin: u.last_login_at, archived: !!u.archived_at })),
     barns: barns.map(b => ({ id: b.code, uuid: b.id, name: b.name, cap: b.capacity, note: b.note, active: b.is_active })),
     cycle: cycle ? { id: cycle.id, code: cycle.code, breed: cycle.breed, status: 'AKTIF', dodDate: cycle.dod_date, dodQty: cycle.dod_qty, dodPrice: +cycle.dod_price, dodWeight: +cycle.dod_weight_kg, targetDays: cycle.target_days, targetWeight: [+cycle.target_weight_min, +cycle.target_weight_max], targetMort: +cycle.target_mort_pct, stage: cycle.stage, createdBy: cycle.created_by, createdAt: cycle.created_at } : null,
-    prevCycles: prevCycles.map(c => ({ id: c.id, code: c.code, breed: c.breed, status: 'SELESAI', dodDate: c.dod_date, dodQty: c.dod_qty })),
-    popTx: popTx.map(t => ({ id: t.id, date: t.occurred_at, type: t.type === 'DOD_IN' ? 'DOD_MASUK' : t.type === 'DEATH' ? 'KEMATIAN' : t.type === 'SALE' ? 'PENJUALAN' : t.type === 'TRANSFER_IN' ? 'TRANSFER_MASUK' : t.type === 'TRANSFER_OUT' ? 'TRANSFER_KELUAR' : t.type, barn: bcode[t.barn_id], qty: t.qty, user: t.created_by, ref: t.ref_id, locked: true })),
+    prevCycles: prevCycles.map(c => ({
+      id: c.cycle_id, code: c.code, breed: c.breed, status: c.status === 'CLOSED' ? 'DITUTUP' : 'SELESAI',
+      dodDate: c.dod_date, dodQty: c.dod_qty, closedAt: c.closed_at, closeNote: c.close_note,
+      days: c.days, deaths: c.deaths, harvested: c.harvested, sold: c.sold, carriedOut: c.carried_out,
+      mortPct: c.mortality_pct == null ? null : +c.mortality_pct, feedKg: +c.feed_kg,
+      harvestQty: c.harvest_qty, harvestKg: +c.harvest_weight_kg, harvestAvgKg: c.harvest_avg_kg == null ? null : +c.harvest_avg_kg,
+      fcr: c.fcr_final == null ? null : +c.fcr_final,
+      revenue: fin ? +c.revenue : null, cost: fin ? +c.cost_total : null, profit: fin ? +c.profit : null,
+    })),
+    cycleSummary: cycleSummary ? {
+      days: cycleSummary.days, deaths: cycleSummary.deaths, harvested: cycleSummary.harvested,
+      sold: cycleSummary.sold, remaining: cycleSummary.remaining,
+      mortPct: cycleSummary.mortality_pct == null ? null : +cycleSummary.mortality_pct,
+      feedKg: +cycleSummary.feed_kg, harvestQty: cycleSummary.harvest_qty, harvestKg: +cycleSummary.harvest_weight_kg,
+      harvestAvgKg: cycleSummary.harvest_avg_kg == null ? null : +cycleSummary.harvest_avg_kg,
+      fcr: cycleSummary.fcr_final == null ? null : +cycleSummary.fcr_final,
+      revenue: fin ? +cycleSummary.revenue : null, cost: fin ? +cycleSummary.cost_total : null,
+      profit: fin ? +cycleSummary.profit : null, dodCost: fin ? +cycleSummary.dod_cost : null,
+    } : null,
+    popTx: popTx.map(t => ({ id: t.id, date: t.occurred_at, type: t.type === 'DOD_IN' ? 'DOD_MASUK' : t.type === 'DEATH' ? 'KEMATIAN' : t.type === 'SALE' ? 'PENJUALAN' : t.type === 'TRANSFER_IN' ? 'TRANSFER_MASUK' : t.type === 'TRANSFER_OUT' ? 'TRANSFER_KELUAR' : t.type === 'HARVEST' ? 'PANEN' : t.type, barn: bcode[t.barn_id], qty: t.qty, user: t.created_by, ref: t.ref_id, locked: true })),
     mortality: mortality.map(m => ({ id: m.id, date: m.occurred_at, barn: bcode[m.barn_id], qty: m.qty, cause: m.cause, note: m.note, photo: m.photo, user: m.created_by, status: m.status, locked: m.locked })),
     feedRecords, feedPurchases, feedAdjust,
     feedOpname: opname.map(o => ({ id: o.id, date: o.occurred_at, physical: +o.physical_kg, theoretical: +o.theoretical_kg, user: o.created_by, note: o.note })),

@@ -32,7 +32,13 @@ services:
       SESSION_SECRET: ${PF_SESSION_SECRET}
       UPLOAD_DIR: /data/uploads
       PUBLIC_URL: ${PF_PUBLIC_URL}
-      SEED_DEMO: ${PF_SEED_DEMO:-true}
+      SEED_DEMO: ${PF_SEED_DEMO:-false}
+      SESSION_DAYS: ${PF_SESSION_DAYS:-30}
+      # Notifikasi WhatsApp — biarkan kosong kalau belum dipakai; aplikasi tetap jalan
+      WA_PROVIDER: ${PF_WA_PROVIDER:-}
+      WA_TOKEN: ${PF_WA_TOKEN:-}
+      WA_URL: ${PF_WA_URL:-}
+      WA_SESSION: ${PF_WA_SESSION:-default}
       TZ: Asia/Jakarta
       NODE_ENV: production
     volumes:

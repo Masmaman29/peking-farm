@@ -59,7 +59,7 @@ function cycleCalc(){const f=document.getElementById('c-form');if(!f)return;
 document.addEventListener('click',e=>{
  const el=e.target.closest('[data-act]');if(!el)return;const a=el.dataset.act;const d=el.dataset;
  if(a==='modal-close-bg'||a==='ai-close-bg'){if(e.target===el){if(a==='ai-close-bg')state.aiOpen=false;else state.modal=null;renderLayer();}return;}
- if(['search-input','audit-q','audit-user','audit-action','repbarn','repday','order-product','site-product','order-calc','site-calc','calc-avg','photo','order-customer','cycle-calc','prod-src'].includes(a))return;
+ if(['search-input','audit-q','audit-user','audit-action','repbarn','repday','order-product','site-product','order-calc','site-calc','calc-avg','photo','order-customer','cycle-calc','prod-src','harvest-calc','harvest-cust'].includes(a))return;
  switch(a){
   case 'go':go(d.page);break;
   case 'side-open':state.sideOpen=true;render();break;
@@ -85,7 +85,7 @@ document.addEventListener('click',e=>{
   case 'toggle-archived':state.showArchived=!state.showArchived;render();break;
   case 'barn-toggle':act('BARN_TOGGLE',{code:d.id}).then(r=>{if(r){toast(r.active?'Kandang diaktifkan.':'Kandang dinonaktifkan.');render();}});break;
   case 'user-toggle':act('USER_TOGGLE',{id:d.id}).then(r=>{if(r){toast(r.active?'Pengguna diaktifkan.':'Pengguna dinonaktifkan.');render();}});break;
-  case 'export':toast(`${d.what} (${d.fmt||'PDF'}) — export akan tersedia di fase Laporan.`,'warn');break;
+  case 'export':{if(d.fmt==='CETAK'){cetakLaporan(d.what);}else{unduhCSV(d.what);}break;}
   case 'toast':toast(d.msg,d.k||'ok');if(d.close)closeModal();break;
   case 'ak-barn':state.filters.akBarn=d.v;render();break;
   case 'ak-step':{const i=document.getElementById('ak-qty');i.value=Math.max(0,(+i.value||0)+(+d.v));break;}
@@ -102,17 +102,62 @@ document.addEventListener('change',e=>{const el=e.target.closest('[data-act]');i
  if(a==='site-product'){openModal('siteorder',{product:el.value});}
  if(a==='prod-src'){const box=document.getElementById('p-inv');if(box)box.hidden=el.value!=='INVENTORY';}
  if(a==='cycle-calc')cycleCalc();
+ if(a==='harvest-calc')harvestCalc();
+ if(a==='harvest-cust'){const box=document.getElementById('pn-new');if(box)box.hidden=el.value!=='NEW';}
 });
 document.addEventListener('input',e=>{const el=e.target;const a=el.dataset.act;
  if(a==='audit-q'){state.filters.q=el.value;const c=document.getElementById('content');const y=c.scrollTop;render();document.getElementById('content').scrollTop=y;const i=document.querySelector('[data-act=audit-q]');i.focus();i.setSelectionRange(i.value.length,i.value.length);}
  if(a==='order-calc')orderCalc();
  if(a==='site-calc'){const f=el.form;const p=DB.products.find(x=>x.id===f.product.value);const q=+f.qty.value||0;document.getElementById('s-w').textContent=num(q*p.avgW,1)+' kg';document.getElementById('s-t').textContent=rp(q*p.avgW*p.price);}
  if(a==='cycle-calc')cycleCalc();
+ if(a==='harvest-calc')harvestCalc();
  if(a==='calc-avg'){const n=+document.getElementById('ak-n').value,t=+document.getElementById('ak-total').value;document.getElementById('avg-val').textContent=n&&t?num(t/n,2)+' kg/ekor':'—';}
 });
 document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='k'){e.preventDefault();const s=document.getElementById('global-search');if(s)s.focus();}if(e.key==='Escape'){state.modal=null;state.aiOpen=false;state.notif=false;renderLayer();}
  if(e.key==='Enter'&&e.target.id==='global-search'){e.preventDefault();const q=e.target.value.trim();if(!q)return;const map=[['pakan','pakan'],['populasi','populasi'],['mortal','populasi'],['bobot','pertumbuhan'],['fcr','pakan'],['keuangan','keuangan'],['laba','keuangan'],['order','penjualan'],['penjualan','penjualan'],['stok','stok'],['approval','persetujuan'],['persetujuan','persetujuan'],['audit','audit'],['anomali','anomali'],['laporan','laporan'],['user','pengguna']];const hit=map.find(([k])=>q.toLowerCase().includes(k));if(hit&&canPage(hit[1]))go(hit[1]);else{state.aiOpen=true;renderLayer();aiAsk(q);}}
 });
+/* ---------- Unduh laporan ----------
+   Isi file diambil dari tabel yang sedang tampil, supaya yang diunduh
+   persis sama dengan yang dilihat di layar. Pemisah titik-koma dan koma
+   desimal supaya langsung terbaca benar di Excel berbahasa Indonesia. */
+function tabelLaporan(){return document.querySelector('#content table')||null;}
+const csvSel=v=>'"'+String(v==null?'':v).replace(/\u00a0/g,' ').trim().replace(/"/g,'""')+'"';
+/* Audit Trail tampil sebagai timeline, bukan tabel, jadi datanya diambil langsung */
+function barisAudit(){
+  const h=['Waktu','User','Aksi','Entitas','Keterangan','Referensi','Hash'];
+  return [h.map(csvSel).join(';')].concat(DB.audit.slice().reverse().map(a=>
+    [fmtDT(a.date),userName(a.user),a.action,a.entity,a.detail,a.ref,a.hash].map(csvSel).join(';')));
+}
+function unduhCSV(nama){
+  let baris;
+  if(nama==='Audit Log'){ baris=barisAudit(); }
+  else{
+    const t=tabelLaporan();
+    if(!t){toast('Belum ada data untuk diunduh di laporan ini.','warn');return;}
+    // textContent, bukan innerText, supaya huruf tidak ikut dibesarkan oleh gaya tampilan
+    baris=[...t.querySelectorAll('tr')].map(r=>[...r.children].map(td=>csvSel(td.textContent)).join(';'));
+  }
+  if(baris.length<2){toast('Belum ada data untuk diunduh di laporan ini.','warn');return;}
+  const judul=`"${nama}"`,
+        kop=[judul,`"${(DB.farm&&DB.farm.name)||'AR-FARM'}"`,`"Diunduh ${new Date().toLocaleString('id-ID')} oleh ${state.user.name}"`,''];
+  const isi='\ufeff'+kop.concat(baris).join('\r\n');
+  const url=URL.createObjectURL(new Blob([isi],{type:'text/csv;charset=utf-8'}));
+  const a=document.createElement('a');
+  const tgl=new Date().toISOString().slice(0,10);
+  a.href=url;a.download=`${nama.replace(/\s+/g,'-').toLowerCase()}-${tgl}.csv`;
+  document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),4000);
+  toast(`${nama} diunduh. Bisa langsung dibuka di Excel.`);
+}
+function cetakLaporan(nama){
+  if(!tabelLaporan()){toast('Belum ada data untuk dicetak di laporan ini.','warn');return;}
+  document.body.dataset.cetak=nama+' \u2014 '+((DB.farm&&DB.farm.name)||'AR-FARM')+' \u2014 '+new Date().toLocaleString('id-ID');
+  window.print();
+}
+function harvestCalc(){const f=document.getElementById('pn-form');if(!f)return;
+ const q=+f.qty.value||0,w=+f.weightKg.value||0,p=+f.pricePerKg.value||0;
+ const a=document.getElementById('pn-avg'),t=document.getElementById('pn-total');
+ if(a)a.textContent=q&&w?num(w/q,2)+' kg/ekor':'\u2014';
+ if(t)t.textContent=w&&p?rp(w*p):'\u2014';}
 function orderCalc(){const q=+document.getElementById('o-qty').value||0,w=+document.getElementById('o-w').value,p=+document.getElementById('o-p').value||0;const prod=DB.products.find(x=>x.id===document.querySelector('[name=product]').value);const est=w||q*prod.avgW;document.getElementById('o-sub').textContent=rp(est*p)+(w?'':' (estimasi)');const st=calc.productStock(prod)-q;document.getElementById('o-stock').textContent=num(st)+' ekor'+(st<0?' — STOK TIDAK CUKUP':'');}
 function aiAsk(q){state.aiMsgs.push({r:'me',t:q});renderLayer();setTimeout(()=>{state.aiMsgs.push({r:'ai',t:aiAnswer(q)});renderLayer();const b=document.getElementById('ai-body');if(b)b.scrollTop=b.scrollHeight;},400);const b=document.getElementById('ai-body');if(b)b.scrollTop=b.scrollHeight;}
 
@@ -142,6 +187,20 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
     if(!barns.length){toast('Isi jumlah DOD minimal di satu kandang.','err');return;}
     const r=await act('CYCLE_CREATE',{dodDate:v.date,dodPrice:+v.price,breed:v.breed,targetDays:+v.days,barns});
     if(r){closeModal();toast(`Siklus ${r.code} dimulai.`);render();}break;}
+  case 'submit-harvest':{if(!needPhoto(f))return;
+    const qty=+v.qty,w=+v.weightKg,pk=+v.pricePerKg;
+    if(!(qty>0&&w>0&&pk>0)){toast('Jumlah ekor, total kilogram, dan harga per kg harus diisi.','err');return;}
+    if(v.customer==='NEW'&&!(v.customerName||'').trim()){toast('Nama pembeli belum diisi.','err');return;}
+    const r=await act('HARVEST',{barn:v.barn,qty,weightKg:w,pricePerKg:pk,
+      customer:v.customer==='NEW'?undefined:v.customer,
+      customerName:v.customer==='NEW'?v.customerName:undefined,
+      customerPhone:v.customer==='NEW'?(v.customerPhone||undefined):undefined,
+      pay:v.pay,note:v.note||undefined},file);
+    if(r){closeModal();toast(`Panen ${r.code} dicatat \u2014 ${num(qty)} ekor, rata-rata ${num(r.avg,2)} kg. Sisa ${num(r.remaining)} ekor.`);render();}break;}
+  case 'submit-cycle-close':{const left=calc.population();
+    if(left>0&&!v.carryRemaining){toast(`Masih ada ${num(left)} ekor. Panen dulu, atau centang bahwa sisanya dicatat keluar.`,'err');return;}
+    const r=await act('CYCLE_CLOSE',{note:v.note||undefined,carryRemaining:!!v.carryRemaining});
+    if(r){closeModal();const s=r.summary||{};toast(`Siklus ${r.code} ditutup. ${s.days} hari, panen ${s.harvest_qty||0} ekor, FCR ${s.fcr_final||'\u2014'}.`);render();}break;}
   case 'submit-product':{const r=await act('PRODUCT_SAVE',{id:f.dataset.id||undefined,name:v.name,type:v.type,description:v.description||undefined,pricePerKg:+v.pricePerKg,minOrder:+v.minOrder,avgWeightKg:+v.avgWeightKg,stockSource:v.stockSource,inventoryId:v.stockSource==='INVENTORY'?v.inventoryId:undefined,published:v.published==='true'});
     if(r){closeModal();toast('Produk disimpan.');render();}break;}
   case 'submit-invitem':{const r=await act('INVENTORY_SAVE',{id:f.dataset.id||undefined,name:v.name,category:v.category,unit:v.unit,minQty:+v.minQty||0});

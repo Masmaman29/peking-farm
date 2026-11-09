@@ -379,6 +379,24 @@ td.r,th.r{text-align:right}
   .stage div small{display:none}
   .login-visual .pillars{grid-template-columns:1fr}
 }
+
+/* ---------- Cetak: hanya tabel laporan, warna terang, hemat tinta ---------- */
+@media print{
+  :root{--text:#111;--muted:#444;--dim:#666}
+  body{background:#fff!important;color:#111!important}
+  .side,.topbar,.tabs,.nav,.seg,.row .f,.btn,.iconbtn,.ai-card,#layer,.notif,.chart-card,canvas{display:none!important}
+  #content{padding:0!important;overflow:visible!important;height:auto!important}
+  .page-h p{color:#444!important}
+  .card{background:#fff!important;border:1px solid #bbb!important;box-shadow:none!important;break-inside:auto}
+  .card-h h3{color:#111!important}
+  .tbl-wrap{overflow:visible!important}
+  table{width:100%!important;border-collapse:collapse!important;font-size:11px}
+  th,td{border:1px solid #bbb!important;padding:4px 6px!important;color:#111!important;background:#fff!important}
+  thead{display:table-header-group}
+  tr{break-inside:avoid}
+  body::before{content:attr(data-cetak);display:block;font:600 13px/1.4 system-ui;margin:0 0 10px;color:#111}
+  @page{margin:14mm 10mm}
+}
 </style></head><body>
 
 <div id="root"></div><div class="toast-wrap" id="toasts"></div><div id="layer"></div>

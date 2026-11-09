@@ -48,9 +48,9 @@ const calc = {
   day(){return DB.cycle?dayOf(DEMO_TODAY):0;},
   popTxUpTo(date){return DB.popTx.filter(t=>t.date<=date);},
   population(barn=null,date=DEMO_TODAY){return DB.popTx.filter(t=>t.date<=date&&(!barn||t.barn===barn)).reduce((s,t)=>s+t.qty,0);},
-  popBalance(){const g=t=>DB.popTx.filter(x=>x.type===t).reduce((s,x)=>s+Math.abs(x.qty),0);return{dod:g('DOD_MASUK'),tIn:g('TRANSFER_MASUK'),mati:g('KEMATIAN'),jual:g('PENJUALAN'),tOut:g('TRANSFER_KELUAR'),akhir:calc.population()};},
+  popBalance(barn=null){const g=t=>DB.popTx.filter(x=>x.type===t&&(!barn||x.barn===barn)).reduce((s,x)=>s+Math.abs(x.qty),0);return{dod:g('DOD_MASUK'),tIn:g('TRANSFER_MASUK'),mati:g('KEMATIAN'),jual:g('PENJUALAN'),panen:g('PANEN'),tOut:g('TRANSFER_KELUAR'),akhir:calc.population(barn)};},
   mortTotal(barn=null){return DB.mortality.filter(m=>!barn||m.barn===barn).reduce((s,m)=>s+m.qty,0);},
-  mortPct(){return calc.mortTotal()/DB.cycle.dodQty*100;},
+  mortPct(){return DB.cycle&&DB.cycle.dodQty?calc.mortTotal()/DB.cycle.dodQty*100:0;},
   mortByDay(){const a=Array(calc.day()).fill(0);DB.mortality.forEach(m=>{const d=dayOf(m.date);if(d>=1&&d<=a.length)a[d-1]+=m.qty;});return a;},
   feedVal(r){return r.versions.length?r.versions[r.versions.length-1].kg:r.kg;}, // active version
   feedByDay(){const a=Array(calc.day()).fill(0);DB.feedRecords.forEach(r=>{const d=dayOf(r.date);if(d>=1&&d<=a.length)a[d-1]+=calc.feedVal(r);});return a;},
@@ -74,8 +74,19 @@ const calc = {
   feedCost(){return DB.feedPurchases.filter(p=>p.status==='APPROVED').reduce((s,p)=>s+p.qty*p.price,0);},
   costByCat(){const m={};calc.expensesApproved().forEach(e=>m[e.cat]=(m[e.cat]||0)+e.amount);m['Pakan']=(m['Pakan']||0)+calc.feedCost();return m;},
   modal(){return Object.values(calc.costByCat()).reduce((a,b)=>a+b,0);},
-  projectedRemainingCost(){const daysLeft=Math.max(0,DB.cycle.targetDays-calc.day());const feedNeed=daysLeft*calc.feedAvg7()*1.15;const feedShort=Math.max(0,feedNeed-calc.feedStockTheory());return feedShort*MASTER.hargaPakanKg+daysLeft/30*(2400000+480000+750000);},
+  // Sisa biaya sampai panen. Biaya non-pakan diperkirakan dari realisasi siklus ini,
+  // bukan angka tetap karangan: kalau belum ada biaya tercatat, hasilnya 0 (bukan tebakan).
+  projectedRemainingCost(){if(!DB.cycle)return 0;
+    const daysLeft=Math.max(0,DB.cycle.targetDays-calc.day());
+    const feedNeed=daysLeft*calc.feedAvg7()*1.15;
+    const feedShort=Math.max(0,feedNeed-calc.feedStockTheory());
+    const nonFeed=calc.expensesApproved().filter(e=>e.cat!=='Pakan').reduce((t,e)=>t+e.amount,0);
+    const perDay=calc.day()>0?nonFeed/calc.day():0;
+    return feedShort*MASTER.hargaPakanKg+daysLeft*perDay;},
+  projectedCostIsEstimate(){return calc.expensesApproved().filter(e=>e.cat!=='Pakan').length===0;},
   projectedPop(){const rate=calc.mortPct()/calc.day();const remain=DB.cycle.targetDays-calc.day();return Math.round(calc.population()*(1-rate/100*remain));},
+  sum(){return DB.cycleSummary||null;},
+  harvestedTotal(){return calc.popBalance().panen;},
   livePrice(){const p=DB.products.find(x=>x.type==='LIVE')||DB.products[0];return p?+p.price||0:0;},
   estRevenue(){return calc.projectedPop()*MASTER.targetBobotMin*1.1*calc.livePrice();},
   estProfit(){return calc.estRevenue()-calc.modal()-calc.projectedRemainingCost();},

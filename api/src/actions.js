@@ -339,6 +339,102 @@ export const ACTIONS = {
     return { id: cy, code };
   },
 
+  /* ---------------- PANEN & TUTUP SIKLUS ---------------- */
+  async HARVEST(c, p, user, file) {
+    need(user, ['OWNER', 'MANAGER']);
+    const v = z.object({
+      barn: z.string(),
+      qty: z.number().int().positive().max(100000),
+      weightKg: z.number().positive().max(200000),
+      pricePerKg: z.number().positive(),
+      customer: z.string().optional(),
+      customerName: z.string().trim().optional(),
+      customerPhone: z.string().trim().optional(),
+      pay: z.enum(['UNPAID', 'DP', 'PAID']).optional(),
+      note: z.string().trim().optional()
+    }).parse(p);
+    await requirePhoto(c, file);
+
+    const cy = await activeCycle(c);
+    const b = await barnId(c, v.barn, user);
+    const pop = (await c.query('SELECT population FROM v_population WHERE cycle_id=$1 AND barn_id=$2', [cy.id, b])).rows[0]?.population || 0;
+    if (v.qty > pop) throw new ActionError(`Jumlah panen (${v.qty} ekor) melebihi populasi kandang ${v.barn} (${pop} ekor).`);
+
+    // Rata-rata di bawah 0,5 kg/ekor hampir pasti salah ketik (kg vs gram)
+    const avg = v.weightKg / v.qty;
+    if (avg < 0.5 || avg > 8) throw new ActionError(`Rata-rata ${avg.toFixed(2)} kg/ekor tidak wajar. Periksa jumlah ekor dan total kilogram.`);
+
+    const farm = (await c.query('SELECT id FROM farm LIMIT 1')).rows[0];
+    // Panen butuh satu produk LIVE sebagai acuan; kalau belum ada, dibuat sekali (belum tayang di web)
+    let prod = (await c.query(`SELECT id FROM product WHERE type='LIVE' ORDER BY is_published DESC, name LIMIT 1`)).rows[0];
+    if (!prod) {
+      prod = (await c.query(`INSERT INTO product(farm_id,name,type,price_per_kg,min_order,avg_weight_kg,stock_source,is_published)
+        VALUES ($1,'Bebek Peking Hidup','LIVE',$2,1,$3,'POPULATION',false) RETURNING id`,
+        [farm.id, v.pricePerKg, avg.toFixed(3)])).rows[0];
+      await audit(c, user.id, 'CREATE', 'product', `Produk "Bebek Peking Hidup" dibuat otomatis untuk mencatat panen (belum tayang di website)`, prod.id);
+    }
+
+    let cust = v.customer;
+    if (!cust || cust === 'NEW') {
+      cust = (await c.query(`INSERT INTO customer(name,phone,type) VALUES ($1,$2,'Pengepul') RETURNING id`,
+        [v.customerName || 'Pengepul', v.customerPhone || '-'])).rows[0].id;
+    }
+
+    const total = v.weightKg * v.pricePerKg;
+    const paid = v.pay === 'PAID';
+    const code = 'PNN-' + String((await c.query("SELECT nextval('order_code_seq') n")).rows[0].n).padStart(4, '0');
+
+    // stock_applied=true: ledger ditulis di bawah sebagai HARVEST, bukan lewat fn_order_apply_stock
+    const o = (await c.query(`INSERT INTO "order"(code,customer_id,source,status,payment_status,note,total_est,total_final,stock_applied,created_by,decided_by,decided_at)
+      VALUES ($1,$2,'PANEN',$3,$4,$5,$6,$6,true,$7,$7,now()) RETURNING id`,
+      [code, cust, paid ? 'PAID' : 'CONFIRMED', paid ? 'PAID' : v.pay === 'DP' ? 'DP' : 'UNPAID', v.note || null, total, user.id])).rows[0];
+
+    const it = (await c.query(`INSERT INTO order_item(order_id,product_id,cycle_id,barn_id,qty,weight_kg,price_per_kg)
+      VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`, [o.id, prod.id, cy.id, b, v.qty, v.weightKg, v.pricePerKg])).rows[0];
+
+    await c.query(`INSERT INTO population_tx(cycle_id,barn_id,type,qty,ref_type,ref_id,occurred_at,created_by)
+      VALUES ($1,$2,'HARVEST',$3,'order_item',$4,now(),$5)`, [cy.id, b, -v.qty, it.id, user.id]);
+
+    if (paid) await c.query(`INSERT INTO sale(order_id,amount,method,paid_at,created_by) VALUES ($1,$2,'panen',now(),$3)`, [o.id, total, user.id]);
+    if (cy.stage !== 'HARVEST') await c.query(`UPDATE cycle SET stage='HARVEST', updated_by=$1, updated_at=now() WHERE id=$2`, [user.id, cy.id]);
+
+    const photo = await saveAttachment(c, file, 'order', o.id, 'panen', user);
+    const left = (await c.query('SELECT COALESCE(population,0) n FROM v_population_cycle WHERE cycle_id=$1', [cy.id])).rows[0]?.n || 0;
+    await audit(c, user.id, 'CREATE', 'order',
+      `Panen ${code} — ${v.qty} ekor, ${v.weightKg} kg (rata-rata ${avg.toFixed(2)} kg/ekor) @ ${rp(v.pricePerKg)}/kg = ${rp(total)} — Kandang ${v.barn}, sisa ${left} ekor`, o.id);
+    await notify(c, ['OWNER'], 'harvest', `Panen ${v.qty} ekor dari Kandang ${v.barn}`, `${v.weightKg} kg — ${rp(total)}, sisa ${left} ekor`, '/penjualan');
+    return { code, total, avg: +avg.toFixed(3), remaining: left, photo };
+  },
+
+  async CYCLE_CLOSE(c, p, user) {
+    need(user, ['OWNER']);
+    const v = z.object({ note: z.string().trim().optional(), carryRemaining: z.boolean().optional() }).parse(p);
+    const cy = await activeCycle(c);
+
+    const left = (await c.query(`SELECT barn_id, population FROM v_population WHERE cycle_id=$1 AND population > 0`, [cy.id])).rows;
+    const total = left.reduce((a, r) => a + Number(r.population), 0);
+    if (total > 0 && !v.carryRemaining) {
+      throw new ActionError(`Masih ada ${total} ekor tercatat di kandang. Panen atau jual dulu, atau tandai sisanya dibawa keluar dari siklus ini.`);
+    }
+    for (const r of left) {
+      await c.query(`INSERT INTO population_tx(cycle_id,barn_id,type,qty,ref_type,ref_id,occurred_at,created_by)
+        VALUES ($1,$2,'TRANSFER_OUT',$3,'cycle',$1,now(),$4)`, [cy.id, r.barn_id, -Number(r.population), user.id]);
+    }
+
+    const s = (await c.query('SELECT * FROM v_cycle_summary WHERE cycle_id=$1', [cy.id])).rows[0];
+    await c.query(`UPDATE cycle SET status='CLOSED', stage='HARVEST', closed_at=now(), closed_by=$1, close_note=$2, updated_by=$1, updated_at=now() WHERE id=$3`,
+      [user.id, v.note || null, cy.id]);
+
+    const out = (await c.query('SELECT * FROM v_cycle_summary WHERE cycle_id=$1', [cy.id])).rows[0];
+    await audit(c, user.id, 'UPDATE', 'cycle',
+      `Siklus ${cy.code} ditutup — ${out.days} hari, panen ${out.harvested} ekor / ${out.harvest_weight_kg} kg, mati ${out.deaths} ekor (${out.mortality_pct || 0}%), FCR ${out.fcr_final || '-'}, pendapatan ${rp(out.revenue)}, modal ${rp(out.cost_total)}, laba ${rp(out.profit)}` +
+      (total > 0 ? ` — ${total} ekor sisa dibawa keluar` : ''),
+      cy.id, { status: 'ACTIVE' }, { status: 'CLOSED' });
+    await notify(c, ['OWNER', 'MANAGER'], 'cycle_closed', `Siklus ${cy.code} ditutup`,
+      `Laba ${rp(out.profit)} — FCR ${out.fcr_final || '-'}, mortalitas ${out.mortality_pct || 0}%`, '/laporan');
+    return { code: cy.code, summary: out, carried: total };
+  },
+
   /* ---------------- MASTER PRODUK & STOK ---------------- */
   async PRODUCT_SAVE(c, p, user) {
     need(user, ['OWNER', 'ADMIN']);

@@ -10,6 +10,7 @@ import crypto from 'node:crypto';
 import { pool, one, q, rows, tx, audit, ensureAppRole } from './db.js';
 import { buildBootstrap } from './bootstrap.js';
 import { runAction, publicOrder, ActionError } from './actions.js';
+import { mulaiPengirimWA, waAktif } from './notify-wa.js';
 import { seedIfEmpty } from './seed.js';
 import { migrate } from './migrate.js';
 
@@ -169,4 +170,5 @@ setInterval(() => { q('SELECT fn_auto_lock()').catch(() => {}); q('DELETE FROM s
 await migrate(app.log).catch(e => app.log.error('migrate: ' + e.message));
 await ensureAppRole().catch(e => app.log.warn('ensureAppRole: ' + e.message));
 if (process.env.SEED_DEMO === 'true') await seedIfEmpty(app.log);
+mulaiPengirimWA(app.log);
 app.listen({ port: +(process.env.PORT || 3000), host: '0.0.0.0' });
