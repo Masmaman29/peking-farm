@@ -6,6 +6,7 @@ import fstatic from '@fastify/static';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import argon2 from 'argon2';
+import crypto from 'node:crypto';
 import { pool, one, q, rows, tx, audit, ensureAppRole } from './db.js';
 import { buildBootstrap } from './bootstrap.js';
 import { runAction, publicOrder, ActionError } from './actions.js';
@@ -108,6 +109,32 @@ app.get('/api/v1/public/farm', async () => {
   const c = await one(`SELECT c.code, c.dod_date + c.target_days AS harvest, p.population, w.avg_kg, p.deaths::float/c.dod_qty*100 mort FROM cycle c JOIN v_population_cycle p ON p.cycle_id=c.id LEFT JOIN v_weight_latest w ON w.cycle_id=c.id WHERE c.status='ACTIVE' LIMIT 1`);
   return c ? { cycle: c.code, harvestDate: c.harvest, population: c.population, avgWeightKg: c.avg_kg ? +c.avg_kg : null, mortalityPct: +(+c.mort).toFixed(1) } : {};
 });
+/* ---------- pemulihan password lewat tautan sekali pakai ---------- */
+const resetHash = t => crypto.createHash('sha256').update(String(t || '').trim().toUpperCase()).digest('hex');
+async function resetLookup(token) {
+  return one(`SELECT r.id, u.id user_id, u.name FROM password_reset r JOIN app_user u ON u.id=r.user_id
+               WHERE r.token_hash=$1 AND r.used_at IS NULL AND r.expires_at>now()
+                 AND u.is_active AND u.archived_at IS NULL`, [resetHash(token)]);
+}
+app.get('/api/v1/public/reset/:token', { config: { rateLimit: { max: 20, timeWindow: '15 minutes' } } }, async req => {
+  const r = await resetLookup(req.params.token);
+  return r ? { valid: true, name: r.name } : { valid: false };
+});
+app.post('/api/v1/public/reset/:token', { config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } }, async (req, reply) => {
+  const r = await resetLookup(req.params.token);
+  if (!r) return reply.code(400).send({ code: 'RESET_INVALID', message: 'Tautan sudah dipakai atau kedaluwarsa. Buat tautan baru dari konsol server.' });
+  const pw = String((req.body || {}).password || '');
+  if (pw.length < 8) return reply.code(400).send({ code: 'VALIDATION', message: 'Password minimal 8 karakter.' });
+  const hash = await argon2.hash(pw, { type: argon2.argon2id });
+  await tx(null, async c => {
+    await c.query('UPDATE password_reset SET used_at=now() WHERE id=$1', [r.id]);
+    await c.query('UPDATE app_user SET password_hash=$1, password_changed_at=now(), failed_logins=0, locked_until=NULL, updated_at=now() WHERE id=$2', [hash, r.user_id]);
+    await c.query('DELETE FROM session WHERE user_id=$1', [r.user_id]);
+    await audit(c, r.user_id, 'UPDATE', 'app_user', `Password ${r.name} diatur ulang lewat tautan pemulihan dari konsol server`, r.user_id, null, null, req);
+  });
+  return { ok: true, name: r.name };
+});
+
 /* ---------- setup awal: hanya hidup selama belum ada satu pun pengguna ---------- */
 async function setupNeeded() { return +(await one('SELECT count(*) n FROM app_user')).n === 0; }
 app.get('/api/v1/public/setup', async () => ({ needed: await setupNeeded() }));

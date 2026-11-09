@@ -27,6 +27,13 @@ async function reject(kind,id,reason){const r=await act('REJECT',{kind,id,reason
 
 /* ---------------- WEBSITE PUBLIK (tanpa login) ---------------- */
 const calcOrig={productStock:calc.productStock,population:calc.population,avgWeight:calc.avgWeight,mortPct:calc.mortPct};
+async function resetBoot(token){
+  state.view='reset';state.reset={status:'loading',token};render();
+  try{const r=await api('/public/reset/'+encodeURIComponent(token));
+    state.reset=r.valid?{status:'form',token,name:r.name}:{status:'invalid'};}
+  catch{state.reset={status:'invalid'};}
+  render();
+}
 async function siteBoot(){
   const [prods,farm]=await Promise.all([api('/public/products'),api('/public/farm')]);
   const harvest=farm.harvestDate?new Date(farm.harvestDate):new Date();
@@ -74,6 +81,7 @@ document.addEventListener('click',e=>{
   case 'approve':approve(d.kind,d.id);break;
   case 'reject':openModal('reject',{id:d.id,kind:d.kind});break;
   case 'order-status':act('ORDER_STATUS',{id:d.id,status:d.s}).then(r=>{if(r){toast(`Order ${d.id} → ${d.s}${d.s==='CONFIRMED'?' · stok berkurang':''}`);render();}});break;
+  case 'reset-cancel':location.href=location.pathname;break;
   case 'toggle-archived':state.showArchived=!state.showArchived;render();break;
   case 'barn-toggle':act('BARN_TOGGLE',{code:d.id}).then(r=>{if(r){toast(r.active?'Kandang diaktifkan.':'Kandang dinonaktifkan.');render();}});break;
   case 'user-toggle':act('USER_TOGGLE',{id:d.id}).then(r=>{if(r){toast(r.active?'Pengguna diaktifkan.':'Pengguna dinonaktifkan.');render();}});break;
@@ -138,6 +146,12 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
     if(r){closeModal();toast('Produk disimpan.');render();}break;}
   case 'submit-invitem':{const r=await act('INVENTORY_SAVE',{id:f.dataset.id||undefined,name:v.name,category:v.category,unit:v.unit,minQty:+v.minQty||0});
     if(r){closeModal();toast('Item stok disimpan.');render();}break;}
+  case 'submit-reset':{if(v.password!==v.confirm){toast('Password dan ulangannya tidak sama.','err');return;}
+    state.busy=true;render();
+    try{await api('/public/reset/'+encodeURIComponent(state.reset.token),{method:'POST',body:JSON.stringify({password:v.password})});
+      state.reset={status:'done'};}
+    catch(err){toast(err.message||'Gagal mengganti password.','err');}
+    finally{state.busy=false;render();}break;}
   case 'submit-setup':{if(v.password!==v.confirm){toast('Password dan ulangannya tidak sama.','err');return;}state.busy=true;render();
     try{await api('/public/setup',{method:'POST',body:JSON.stringify({farmName:v.farmName,location:v.location,name:v.name,phone:v.phone,email:v.email,password:v.password})});
       toast('Akun Owner dibuat. Silakan masuk.');state.view='login';}
@@ -157,6 +171,8 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
 
 /* ---------------- BOOT ---------------- */
 (async function boot(){
+  const mReset=location.hash.match(/^#reset=([A-Za-z0-9-]{8,40})$/);
+  if(mReset){return resetBoot(mReset[1]);}
   if(location.hash==='#website' || SITE_ONLY){return siteBoot();}
   try{const me=await api('/auth/me');await loadDB();state.user=DB.users.find(x=>x.id===me.id)||me;state.page=me.role==='ANAK_KANDANG'?'ak-home':'dashboard';state.view='app';}
   catch{
