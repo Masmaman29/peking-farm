@@ -14,8 +14,11 @@ import { migrate } from './migrate.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = Fastify({ logger: { level: process.env.LOG_LEVEL || 'info' }, trustProxy: true, bodyLimit: 15 * 1024 * 1024 });
-const SESSION_DAYS = 0.5; // 12 jam
+// Sesi 30 hari dan diperpanjang tiap kali dipakai, supaya tidak perlu login ulang
+// setiap hari. Turunkan lewat env SESSION_DAYS kalau perangkat dipakai bergantian.
+const SESSION_DAYS = Math.max(0.02, +(process.env.SESSION_DAYS || 30));
 const secure = (process.env.PUBLIC_URL || '').startsWith('https');
+const COOKIE = () => ({ path: '/', httpOnly: true, sameSite: 'lax', secure, maxAge: Math.round(SESSION_DAYS * 86400) });
 
 await app.register(cookie, { secret: process.env.SESSION_SECRET || 'dev-secret' });
 await app.register(multipart, { limits: { fileSize: 12 * 1024 * 1024, files: 1 } });
@@ -29,7 +32,7 @@ async function currentUser(req) {
   if (!sid) return null;
   const s = await one(`SELECT u.id,u.name,u.role,u.barn_id,u.is_active FROM session s JOIN app_user u ON u.id=s.user_id WHERE s.id=$1 AND s.expires_at>now()`, [sid]).catch(() => null);
   if (!s || !s.is_active) return null;
-  q('UPDATE session SET last_seen=now() WHERE id=$1', [sid]).catch(() => {});
+  q(`UPDATE session SET last_seen=now(), expires_at = now() + interval '${SESSION_DAYS} day' WHERE id=$1`, [sid]).catch(() => {});
   return s;
 }
 app.decorateRequest('user', null);
@@ -38,6 +41,7 @@ app.addHook('preHandler', async (req, reply) => {
   if (req.url.startsWith('/api/v1/public') || req.url.startsWith('/api/v1/auth/login') || req.url.startsWith('/api/v1/health')) return;
   req.user = await currentUser(req);
   if (!req.user) return reply.code(401).send({ code: 'UNAUTHENTICATED', message: 'Silakan login.' });
+  reply.setCookie('pf_session', req.cookies.pf_session, COOKIE());
 });
 app.setErrorHandler((err, req, reply) => {
   if (err instanceof ActionError) return reply.code(err.status).send({ code: err.status === 403 ? 'FORBIDDEN' : 'BAD_REQUEST', message: err.message });
@@ -60,7 +64,7 @@ app.post('/api/v1/auth/login', { config: { rateLimit: { max: 10, timeWindow: '15
   const s = await one(`INSERT INTO session(user_id,expires_at,ip,user_agent) VALUES ($1, now() + interval '${SESSION_DAYS} day', $2, $3) RETURNING id`, [u.id, req.ip, req.headers['user-agent'] || null]);
   await q('UPDATE app_user SET last_login_at=now(), failed_logins=0 WHERE id=$1', [u.id]);
   await tx(null, c => audit(c, u.id, 'LOGIN', 'session', `Login sebagai ${u.role}`, s.id, null, null, req));
-  reply.setCookie('pf_session', s.id, { path: '/', httpOnly: true, sameSite: 'lax', secure, maxAge: SESSION_DAYS * 86400 });
+  reply.setCookie('pf_session', s.id, COOKIE());
   return { id: u.id, name: u.name, role: u.role };
 });
 app.post('/api/v1/auth/logout', async (req, reply) => {
