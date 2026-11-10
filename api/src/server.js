@@ -107,8 +107,21 @@ app.get('/api/v1/public/products', { config: { rateLimit: { max: 60, timeWindow:
   return list.map(p => { const s = Number(p.available_stock || 0); return { id: p.id, name: p.name, type: p.type, desc: p.description, pricePerKg: +p.price_per_kg, minOrder: p.min_order, avgWeightKg: +p.avg_weight_kg, availableStock: s, harvestDate: p.harvest_date, status: s <= 0 ? 'HABIS' : p.type === 'LIVE' ? 'PRE-ORDER' : s <= p.min_order * 2 ? 'STOK TERBATAS' : 'TERSEDIA' }; });
 });
 app.get('/api/v1/public/farm', async () => {
-  const c = await one(`SELECT c.code, c.dod_date + c.target_days AS harvest, p.population, w.avg_kg, p.deaths::float/c.dod_qty*100 mort FROM cycle c JOIN v_population_cycle p ON p.cycle_id=c.id LEFT JOIN v_weight_latest w ON w.cycle_id=c.id WHERE c.status='ACTIVE' LIMIT 1`);
-  return c ? { cycle: c.code, harvestDate: c.harvest, population: c.population, avgWeightKg: c.avg_kg ? +c.avg_kg : null, mortalityPct: +(+c.mort).toFixed(1) } : {};
+  const c = await one(`SELECT c.code, c.dod_qty, c.dod_date, c.target_days, c.dod_date + c.target_days AS harvest, p.population, w.avg_kg, p.deaths::float/c.dod_qty*100 mort FROM cycle c JOIN v_population_cycle p ON p.cycle_id=c.id LEFT JOIN v_weight_latest w ON w.cycle_id=c.id WHERE c.status='ACTIVE' LIMIT 1`);
+  const f = await one('SELECT name, location FROM farm ORDER BY created_at LIMIT 1');
+  const cfg = await rows(`SELECT key, value FROM master_config WHERE key IN ('kontak_whatsapp','kontak_email','kontak_alamat','kontak_jam')`);
+  const g = k => { const v = cfg.find(x => x.key === k)?.value; return typeof v === 'string' && v.trim() ? v.trim() : null; };
+  return {
+    name: f?.name || null,
+    location: g('kontak_alamat') || f?.location || null,
+    whatsapp: g('kontak_whatsapp'),
+    email: g('kontak_email'),
+    jam: g('kontak_jam'),
+    ...(c ? {
+      cycle: c.code, harvestDate: c.harvest, dodQty: c.dod_qty, dodDate: c.dod_date, targetDays: c.target_days,
+      population: c.population, avgWeightKg: c.avg_kg ? +c.avg_kg : null, mortalityPct: +(+c.mort).toFixed(1),
+    } : {}),
+  };
 });
 /* ---------- pemulihan password lewat tautan sekali pakai ---------- */
 const resetHash = t => crypto.createHash('sha256').update(String(t || '').trim().toUpperCase()).digest('hex');

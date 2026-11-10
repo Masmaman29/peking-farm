@@ -638,6 +638,16 @@ export const ACTIONS = {
       const nv = { min: +(p.targetBobotMin ?? old.min), max: +(p.targetBobotMax ?? old.max) };
       if (nv.min !== +old.min || nv.max !== +old.max) { await c.query(`UPDATE master_config SET value=$1::jsonb, updated_by=$2 WHERE key='target_bobot'`, [JSON.stringify(nv), user.id]); changes.push(`target_bobot: ${old.min}-${old.max} → ${nv.min}-${nv.max}`); }
     }
+    // Kontak website: teks, bukan angka
+    const teks = { kontakWhatsapp: 'kontak_whatsapp', kontakEmail: 'kontak_email', kontakAlamat: 'kontak_alamat', kontakJam: 'kontak_jam' };
+    for (const [k, key] of Object.entries(teks)) if (p[k] !== undefined) {
+      const val = z.string().trim().max(120).parse(String(p[k]));
+      const old = (await c.query('SELECT value FROM master_config WHERE key=$1', [key])).rows[0]?.value;
+      if (String(old ?? '') !== val) {
+        await c.query(`UPDATE master_config SET value=$1::jsonb, updated_by=$2, updated_at=now() WHERE key=$3`, [JSON.stringify(val), user.id, key]);
+        changes.push(`${key}: "${old ?? ''}" → "${val}"`);
+      }
+    }
     if (changes.length) await audit(c, user.id, 'CONFIG', 'master_config', `Master data diubah — ${changes.join('; ')}`, 'MASTER');
     return { changed: changes.length };
   },

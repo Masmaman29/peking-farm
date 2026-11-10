@@ -37,7 +37,11 @@ async function resetBoot(token){
 async function siteBoot(){
   const [prods,farm]=await Promise.all([api('/public/products'),api('/public/farm')]);
   const harvest=farm.harvestDate?new Date(farm.harvestDate):new Date();
-  DB={farm:{name:'AR-FARM',location:'Sidoarjo, Jawa Timur'},cycle:{code:farm.cycle||'-',dodQty:500,targetDays:45,dodDate:new Date(harvest.getTime()-44*86400000)},products:prods.map(p=>({id:p.id,name:p.name,desc:p.desc,unit:'ekor',priceKg:'price',price:p.pricePerKg,minOrder:p.minOrder,stockFrom:p.type==='LIVE'?'population':'inv',avgW:p.avgWeightKg,stock:p.availableStock,pubStatus:p.status})),customers:[],orders:[],users:[]};
+  // Semua dari data asli. Kalau belum ada siklus aktif, DB.cycle dibiarkan null
+  // supaya website tidak mengarang jadwal panen.
+  DB={farm:{name:farm.name||'AR-FARM',location:farm.location||'',whatsapp:farm.whatsapp||null,email:farm.email||null,jam:farm.jam||null},
+      cycle:farm.cycle?{code:farm.cycle,dodQty:farm.dodQty,targetDays:farm.targetDays,dodDate:new Date(farm.dodDate)}:null,
+      products:prods.map(p=>({id:p.id,name:p.name,desc:p.desc,unit:'ekor',priceKg:'price',price:p.pricePerKg,minOrder:p.minOrder,stockFrom:p.type==='LIVE'?'population':'inv',avgW:p.avgWeightKg,stock:p.availableStock,pubStatus:p.status})),customers:[],orders:[],users:[]};
   MASTER={price:0};DEMO_TODAY=new Date();
   DB.products.forEach(p=>{MASTER['price_'+p.id]=p.price;p.priceKg='price_'+p.id;});
   calc.productStock=p=>p.stock;calc.population=()=>farm.population||0;calc.avgWeight=()=>farm.avgWeightKg||0;calc.mortPct=()=>farm.mortalityPct||0;
@@ -187,6 +191,9 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
     if(!barns.length){toast('Isi jumlah DOD minimal di satu kandang.','err');return;}
     const r=await act('CYCLE_CREATE',{dodDate:v.date,dodPrice:+v.price,breed:v.breed,targetDays:+v.days,barns});
     if(r){closeModal();toast(`Siklus ${r.code} dimulai.`);render();}break;}
+  case 'submit-kontak':{
+    const r=await act('CONFIG_SAVE',{kontakWhatsapp:v.kontakWhatsapp||'',kontakJam:v.kontakJam||'',kontakAlamat:v.kontakAlamat||'',kontakEmail:v.kontakEmail||''});
+    if(r){toast(r.changed?'Kontak website disimpan.':'Tidak ada yang berubah.');render();}break;}
   case 'submit-harvest':{if(!needPhoto(f))return;
     const qty=+v.qty,w=+v.weightKg,pk=+v.pricePerKg;
     if(!(qty>0&&w>0&&pk>0)){toast('Jumlah ekor, total kilogram, dan harga per kg harus diisi.','err');return;}

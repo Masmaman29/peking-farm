@@ -70,6 +70,8 @@ export async function buildBootstrap(user) {
       hargaDOD: +cfg.harga_dod, hargaPakanKg: +cfg.harga_pakan_kg,
       targetPanenHari: +cfg.target_panen_hari, targetBobotMin: +cfg.target_bobot.min, targetBobotMax: +cfg.target_bobot.max, targetMortalitasPct: +cfg.target_mortalitas_pct,
       minStokPakanHari: +cfg.min_stok_pakan_hari, fotoWajib: !!cfg.foto_wajib, jamKerja: [cfg.jam_kerja.mulai, cfg.jam_kerja.selesai],
+      kontakWhatsapp: cfg.kontak_whatsapp || '', kontakEmail: cfg.kontak_email || '',
+      kontakAlamat: cfg.kontak_alamat || '', kontakJam: cfg.kontak_jam || '',
       batasMortalitasHarian: +cfg.batas_mortalitas_harian, batasPakanPct: +cfg.batas_deviasi_pakan_pct, batasSelisihKg: +cfg.batas_selisih_opname_kg,
       ambangApprovalRp: +cfg.ambang_approval_rp, targetCurve: cfg.kurva_target_bobot,
     },
