@@ -27,7 +27,33 @@ function akRiwayat(){const u=state.user;const items=[...DB.feedRecords.filter(r=
 const modalWrap=(title,body,foot,cls='modal')=>`<div class="modal-bg" data-act="modal-close-bg"><div class="${cls}" data-stop><div class="mh"><h3>${title}</h3><button class="iconbtn" style="width:32px;height:32px" data-act="modal-close">${ic('x',16)}</button></div><div class="mb">${body}</div>${foot?`<div class="mf">${foot}</div>`:''}</div></div>`;
 function openModal(m,opts={}){state.modal={m,opts};renderLayer();}
 function closeModal(){state.modal=null;renderLayer();}
-function renderLayer(){const L=document.getElementById('layer');let html='';if(state.modal)html+=modalHTML(state.modal.m,state.modal.opts);if(state.aiOpen)html+=aiDrawer();L.innerHTML=html;const f=L.querySelector('input:not([type=hidden]),select,textarea');if(f&&state.modal)setTimeout(()=>f.focus(),50);}
+/* ---------- Tombol lihat password ----------
+   Dipasang otomatis ke setiap kolom password (login, setup, reset, ganti password).
+   Hanya mengubah tampilan di layar pemiliknya sendiri; tidak ada password yang
+   dikirim, disimpan, atau dicatat di mana pun. */
+const MATA_BUKA='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>';
+const MATA_TUTUP='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7c2 0 3.7.6 5.2 1.5M22 12s-3.5 7-10 7c-2 0-3.7-.6-5.2-1.5"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="m3 3 18 18"/></svg>';
+function pasangMataPassword(){
+  document.querySelectorAll('input[type=password]:not([data-mata])').forEach(inp=>{
+    inp.dataset.mata='1';
+    const bungkus=document.createElement('div'); bungkus.className='pw-wrap';
+    inp.parentNode.insertBefore(bungkus,inp); bungkus.appendChild(inp);
+    const tbl=document.createElement('button');
+    tbl.type='button'; tbl.className='pw-eye'; tbl.tabIndex=-1;
+    tbl.title='Lihat password'; tbl.setAttribute('aria-label','Lihat password');
+    tbl.innerHTML=MATA_TUTUP;
+    tbl.addEventListener('click',()=>{
+      const buka=inp.type==='password';
+      inp.type=buka?'text':'password';
+      tbl.innerHTML=buka?MATA_BUKA:MATA_TUTUP;
+      const l=buka?'Sembunyikan password':'Lihat password';
+      tbl.title=l; tbl.setAttribute('aria-label',l);
+      inp.focus();
+    });
+    bungkus.appendChild(tbl);
+  });
+}
+function renderLayer(){const L=document.getElementById('layer');let html='';if(state.modal)html+=modalHTML(state.modal.m,state.modal.opts);if(state.aiOpen)html+=aiDrawer();L.innerHTML=html;pasangMataPassword();const f=L.querySelector('input:not([type=hidden]),select,textarea');if(f&&state.modal)setTimeout(()=>f.focus(),50);}
 function modalHTML(m,o){
  const barnSel=(name='barn')=>`<div class="f"><label>Kandang</label><select name="${name}">${barnOptions()}</select></div>`;
  if(m==='correction'){const rec=o.type==='FEED'?DB.feedRecords.find(r=>r.id===o.id):o.type==='MORT'?DB.mortality.find(r=>r.id===o.id):DB.weights.find(r=>r.id===o.id);const old=o.type==='FEED'?calc.feedVal(rec)+' kg':o.type==='MORT'?rec.qty+' ekor':rec.total+' kg (total)';const unit=o.type==='FEED'?'kg':o.type==='MORT'?'ekor':'kg';

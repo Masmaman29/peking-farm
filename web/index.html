@@ -397,6 +397,17 @@ td.r,th.r{text-align:right}
   body::before{content:attr(data-cetak);display:block;font:600 13px/1.4 system-ui;margin:0 0 10px;color:#111}
   @page{margin:14mm 10mm}
 }
+
+/* ---------- Tombol lihat password ---------- */
+.pw-wrap{position:relative;display:block}
+.pw-wrap>input{width:100%;padding-right:44px}
+.pw-eye{position:absolute;right:6px;top:50%;transform:translateY(-50%);
+  width:34px;height:34px;display:grid;place-items:center;
+  background:none;border:0;border-radius:8px;cursor:pointer;
+  color:var(--dim);transition:color .15s,background .15s}
+.pw-eye:hover{color:var(--text);background:rgba(255,255,255,.07)}
+.pw-eye:active{background:rgba(255,255,255,.12)}
+.pw-eye svg{display:block;pointer-events:none}
 </style></head><body>
 
 <div id="root"></div><div class="toast-wrap" id="toasts"></div><div id="layer"></div>
