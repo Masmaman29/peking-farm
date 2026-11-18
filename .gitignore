@@ -3,3 +3,5 @@ api/node_modules/
 data/uploads/*
 data/backups/*
 !data/uploads/.gitkeep
+web/versi.json
+data/deploy.log

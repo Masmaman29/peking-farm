@@ -67,6 +67,20 @@ services:
         done
     networks: [pf-net]
 
+  # Pemasang otomatis: tiap 2 menit cek GitHub, kalau ada kode baru bangun ulang pf-app.
+  # Memegang docker.sock supaya bisa membangun ulang pf-app; skripnya hanya menyentuh pf-app.
+  pf-updater:
+    build: ./tools/updater
+    container_name: pf-updater
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Jakarta
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/peking-farm:/opt/peking-farm
+    working_dir: /opt/peking-farm
+    networks: [pf-net]
+
 volumes:
   pf-db-data:
 
