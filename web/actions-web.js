@@ -223,7 +223,7 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
  switch(a){
   case 'login':login(v.phone,v.password);break;
   case 'ai-submit':{const q=f.q.value.trim();if(!q)return;f.q.value='';aiAsk(q);break;}
-  case 'ak-save-feed':{if(!needPhoto(f))return;const kg=+v.kg;if(!(kg>0)){toast('Isi jumlah kg.','err');return;}const r=await act('FEED_USAGE',{kg,barn:u.barn,feedType:v.jenis&&v.jenis.startsWith('Starter')?'STARTER':v.jenis&&v.jenis.startsWith('Finisher')?'FINISHER':'GROWER'},file);if(r)done(`Pakan ${kg} kg · ${barnName(u.barn)}`,'ak-pakan');break;}
+  case 'ak-save-feed':{if(!needPhoto(f))return;const kg=+v.kg;if(!(kg>0)){toast('Isi jumlah kg.','err');return;}const r=await act('FEED_USAGE',{kg,barn:u.barn,sesi:v.sesi||undefined,feedType:v.jenis&&v.jenis.startsWith('Starter')?'STARTER':v.jenis&&v.jenis.startsWith('Finisher')?'FINISHER':'GROWER'},file);if(r)done(`Pakan ${kg} kg · ${barnName(u.barn)}`,'ak-pakan');break;}
   case 'ak-save-mort':{const q=+v.qty;if(q<=0){toast('Jumlah harus lebih dari 0. Jika tidak ada kematian, tidak perlu input.','warn');return;}if(!needPhoto(f))return;const r=await act('MORTALITY',{qty:q,barn:u.barn,cause:v.cause,note:v.note},file);if(r){state.filters.akQty=0;done(`Kematian ${q} ekor · ${v.cause}${r.warning?' · ⚠ WARNING: di atas batas normal, Manager diberi notifikasi':''}`,'ak-mati');}break;}
   case 'ak-save-weight':{if(!needPhoto(f))return;const n=+v.n,t=+v.total;if(!(n>0&&t>0)){toast('Isi jumlah sampel dan total berat.','err');return;}const r=await act('WEIGHT',{n,total:t,barn:u.barn},file);if(r)done(`${n} ekor · total ${t} kg · rata-rata ${num(r.avg,2)} kg`,'ak-timbang');break;}
   case 'ak-save-cond':{const r=await act('BARN_CONDITION',{barn:u.barn,temp:+v.temp,hum:+v.hum,litter:v.Sekam,water:v.Airminum,behavior:v.Perilakubebek,note:v.note},file);if(r)done(`${v.temp}°C · ${v.hum}% · sekam ${v.Sekam}`,'ak-kondisi');break;}
@@ -234,10 +234,12 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
   case 'submit-expense':{if(!needPhoto(f))return;const r=await act('EXPENSE',{cat:v.cat,amount:+v.amount,vendor:v.vendor,ref:v.ref},file);if(r){closeModal();toast(r.pending?'Biaya dicatat, menunggu approval.':'Biaya dicatat.');render();}break;}
   case 'submit-opname':{if(!needPhoto(f))return;const r=await act('OPNAME',{physical:+v.physical,note:v.note},file);if(r){closeModal();toast(Math.abs(r.diff)>=MASTER.batasSelisihKg?`Opname tersimpan. Selisih ${num(r.diff)} kg — PERLU VERIFIKASI.`:'Opname tersimpan, stok sesuai.',Math.abs(r.diff)>=MASTER.batasSelisihKg?'warn':'ok');render();}break;}
   case 'submit-adjust':{const r=await act('STOCK_ADJUST',{qty:+v.qty,reason:v.reason});if(r){closeModal();toast('Penyesuaian disetujui dan dicatat.');render();}break;}
+  case 'submit-pakem':{const j=bacaJatah(v);if(!j){toast('Isi kelima jatah gramnya.','err');return;}const r=await act('CONFIG_SAVE',{pakemPakan:j});if(r){toast('Pakem jatah pakan disimpan. Kebutuhan tiap kandang dihitung ulang.');render();}break;}
   case 'submit-cycle-target':{const bobot=+v.bobot||0,hari=+v.days||0;if(!(bobot>0)||!(hari>0)){toast('Isi target bobot dan hari panen.','err');return;}
-   const r=await act('CYCLE_TARGET',{code:DB.cycle.code,targetDays:hari,targetBobotMin:bobot,bobotDodKg:(+v.dodGram||0)/1000});
+   const jt=bacaJatah(v);const lama=DB.cycle.jatah||MASTER.pakemPakan||[];
+   const r=await act('CYCLE_TARGET',{code:DB.cycle.code,targetDays:hari,targetBobotMin:bobot,bobotDodKg:(+v.dodGram||0)/1000,...(jt&&jt.some((x,i)=>x!==lama[i])?{jatah:jt}:{})});
    if(r){closeModal();toast(`Target batch ${r.code} diubah: ${num(bobot,2)} kg di hari ke-${hari}.`);render();}break;}
-  case 'submit-feed-use':{if(!v.jenis){toast('Pilih jenis pakannya.','err');return;}if(!needPhoto(f))return;const r=await act('FEED_USAGE',{kg:+v.kg,barn:v.barn,feedType:v.jenis},file);if(r){closeModal();toast(`Pakan ${num(+v.kg,1)} kg dicatat keluar ke ${barnName(v.barn)}.`);render();}break;}
+  case 'submit-feed-use':{if(!v.jenis){toast('Pilih jenis pakannya.','err');return;}if(!needPhoto(f))return;const r=await act('FEED_USAGE',{kg:+v.kg,barn:v.barn,feedType:v.jenis,sesi:v.sesi},file);if(r){closeModal();toast(`Pakan ${v.sesi==='PAGI'?'pagi':'sore'} ${num(+v.kg,1)} kg dicatat keluar ke ${barnName(v.barn)}.`);render();}break;}
   case 'submit-mort':{if(!needPhoto(f))return;const r=await act('MORTALITY',{qty:+v.qty,barn:v.barn,cause:v.cause},file);if(r){closeModal();toast('Kematian dicatat. Populasi diperbarui lewat transaksi.');render();}break;}
   case 'submit-weigh':{if(!needPhoto(f))return;const r=await act('WEIGHT',{n:+v.n,total:+v.total,barn:v.barn},file);if(r){closeModal();toast(`Timbang dicatat. Rata-rata ${num(r.avg,2)} kg.`);render();}break;}
   case 'submit-health':{const r=await act('HEALTH',{barn:v.barn,type:v.type,item:v.item,dose:v.dose,note:v.note});if(r){closeModal();toast('Tindakan kesehatan dicatat.');render();}break;}
@@ -250,7 +252,7 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
     if(!(bobot>0)){toast('Isi target bobot panen (kg/ekor).','err');return;}
     if(!(hari>0)){toast('Isi target panen (berapa hari).','err');return;}
     const dodGram=+v.dodGram||0;
-    const r=await act('CYCLE_CREATE',{dodDate:v.date,dodPrice:+v.price,breed:v.breed,targetDays:hari,targetBobotMin:bobot,barn:v.barn,qty,...(dodGram>0?{bobotDodKg:dodGram/1000}:{})});
+    const r=await act('CYCLE_CREATE',{dodDate:v.date,dodPrice:+v.price,breed:v.breed,targetDays:hari,targetBobotMin:bobot,barn:v.barn,qty,...(dodGram>0?{bobotDodKg:dodGram/1000}:{}),...(()=>{const j=bacaJatah(v);const pk=MASTER.pakemPakan||[];return j&&j.some((x,i)=>x!==pk[i])?{jatah:j}:{};})()});
     if(r){closeModal();state.batch=r.code;toast(`Batch ${r.code} dimulai — ${num(qty)} ekor di ${barnName(v.barn)}.`);await loadDB();render();}break;}
   case 'submit-batch-move':{
     const r=await act('BATCH_MOVE',{from:v.from,to:v.to,qty:v.qty?+v.qty:undefined,note:v.note||undefined});

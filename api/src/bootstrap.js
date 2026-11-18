@@ -16,7 +16,7 @@ export async function buildBootstrap(user, batchCode) {
      Aplikasi menandainya, dan angka turunan dari kurva bawaan tidak dihitung. */
   const bawaanKey = { target_mortalitas_pct: 'targetMortalitasPct', min_stok_pakan_hari: 'minStokPakanHari',
     batas_mortalitas_harian: 'batasMortalitasHarian', batas_deviasi_pakan_pct: 'batasPakanPct',
-    batas_selisih_opname_kg: 'batasSelisihKg', ambang_approval_rp: 'ambangApprovalRp', jam_kerja: 'jamKerja' };
+    batas_selisih_opname_kg: 'batasSelisihKg', ambang_approval_rp: 'ambangApprovalRp', jam_kerja: 'jamKerja', pakem_pakan: 'pakemPakan' };
   const bawaan = (await rows('SELECT key FROM master_config WHERE updated_by IS NULL'))
     .map(r => bawaanKey[r.key]).filter(Boolean);
   const farm = await one('SELECT * FROM farm ORDER BY created_at LIMIT 1');
@@ -107,7 +107,12 @@ export async function buildBootstrap(user, batchCode) {
   const PAKAI = `t.cycle_id=v.cycle_id AND t.barn_id=v.barn_id AND t.type='USAGE' AND t.status IN ('RECORDED','APPROVED') AND t.deleted_at IS NULL`;
   const MATI = `m.cycle_id=v.cycle_id AND m.barn_id=v.barn_id AND m.deleted_at IS NULL AND m.status<>'SUPERSEDED'`;
   const harian = await rows(`
-    SELECT v.code, v.barn_code, v.barn_name, v.population, v.umur_hari,
+    SELECT v.code, v.barn_code, v.barn_name, v.population, v.umur_hari, c.feed_plan, c.dod_weight_kg,
+      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE ${PAKAI} AND ${TGL} = ${HARI} AND t.sesi='PAGI'),0) AS pakan_pagi,
+      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE ${PAKAI} AND ${TGL} = ${HARI} AND COALESCE(t.sesi,'SORE')='SORE'),0) AS pakan_sore,
+      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE ${PAKAI}),0) AS pakan_total,
+      (SELECT w.avg_kg FROM weight_record w WHERE w.cycle_id=v.cycle_id AND w.barn_id=v.barn_id AND w.deleted_at IS NULL AND w.status<>'SUPERSEDED' ORDER BY w.occurred_at DESC LIMIT 1) AS bobot_akhir,
+      (SELECT ${HARI} - (w.occurred_at AT TIME ZONE 'Asia/Jakarta')::date FROM weight_record w WHERE w.cycle_id=v.cycle_id AND w.barn_id=v.barn_id AND w.deleted_at IS NULL AND w.status<>'SUPERSEDED' ORDER BY w.occurred_at DESC LIMIT 1) AS hari_sejak_timbang,
       COALESCE((SELECT SUM(x.qty) FROM population_tx x WHERE x.cycle_id=v.cycle_id AND x.barn_id=v.barn_id AND x.qty>0),0)::int AS masuk,
       COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE ${PAKAI} AND ${TGL} = ${HARI}),0) AS pakan_hari_ini,
       COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE ${PAKAI} AND ${TGL} = ${HARI} - 1),0) AS pakan_kemarin,
@@ -115,7 +120,9 @@ export async function buildBootstrap(user, batchCode) {
       COALESCE((SELECT COUNT(DISTINCT ${TGL}) FROM feed_transaction t WHERE ${PAKAI} AND ${TGL} BETWEEN ${HARI} - 3 AND ${HARI} - 1),0)::int AS hari_tercatat,
       COALESCE((SELECT SUM(m.qty) FROM mortality m WHERE ${MATI}),0)::int AS mati,
       COALESCE((SELECT SUM(m.qty) FROM mortality m WHERE ${MATI} AND (m.occurred_at AT TIME ZONE 'Asia/Jakarta')::date = ${HARI}),0)::int AS mati_hari_ini
-    FROM v_batch_aktif v ORDER BY v.dod_date, v.barn_code`);
+    FROM v_batch_aktif v JOIN cycle c ON c.id = v.cycle_id ORDER BY v.dod_date, v.barn_code`);
+  const pakem = cfg.pakem_pakan || [];
+  const jatahUmur = (plan, umur) => { const r = (plan || pakem).find(x => umur >= +x[0] && umur <= +x[1]); return r ? +r[2] : null; };
   const mortUmur = await rows(`
     SELECT ((m.occurred_at AT TIME ZONE 'Asia/Jakarta')::date - c.dod_date) + 1 AS umur, SUM(m.qty)::int AS n
       FROM mortality m JOIN cycle c ON c.id = m.cycle_id
@@ -153,6 +160,7 @@ export async function buildBootstrap(user, batchCode) {
       kontakAlamat: cfg.kontak_alamat || '', kontakJam: cfg.kontak_jam || '',
       batasMortalitasHarian: +cfg.batas_mortalitas_harian, batasPakanPct: +cfg.batas_deviasi_pakan_pct, batasSelisihKg: +cfg.batas_selisih_opname_kg,
       ambangApprovalRp: +cfg.ambang_approval_rp,
+      pakemPakan: (cfg.pakem_pakan || []).map(r => +r[2]), jadwalTimbangHari: +(cfg.jadwal_timbang_hari || 0),
       bawaan,
     },
     farm: { id: farm.id, name: farm.name, location: farm.location },
@@ -164,7 +172,7 @@ export async function buildBootstrap(user, batchCode) {
       dodDate: b.dod_date, dodQty: b.dod_qty, targetDays: b.target_days, stage: b.stage,
       population: b.population, umur: b.umur_hari, panen: b.perkiraan_panen, sisaHari: b.sisa_hari,
     })),
-    cycle: cycle ? { id: cycle.id, code: cycle.code, breed: cycle.breed, status: 'AKTIF', dodDate: cycle.dod_date, dodQty: cycle.dod_qty, dodPrice: +cycle.dod_price, dodWeight: +cycle.dod_weight_kg, targetDays: cycle.target_days, targetWeight: [+cycle.target_weight_min, +cycle.target_weight_max], targetCurve: cycle.target_curve || [], targetMort: +cycle.target_mort_pct, stage: cycle.stage, createdBy: cycle.created_by, createdAt: cycle.created_at } : null,
+    cycle: cycle ? { id: cycle.id, code: cycle.code, breed: cycle.breed, status: 'AKTIF', dodDate: cycle.dod_date, dodQty: cycle.dod_qty, dodPrice: +cycle.dod_price, dodWeight: +cycle.dod_weight_kg, targetDays: cycle.target_days, targetWeight: [+cycle.target_weight_min, +cycle.target_weight_max], targetCurve: cycle.target_curve || [], jatah: cycle.feed_plan ? cycle.feed_plan.map(r => +r[2]) : null, targetMort: +cycle.target_mort_pct, stage: cycle.stage, createdBy: cycle.created_by, createdAt: cycle.created_at } : null,
     prevCycles: prevCycles.map(c => ({
       id: c.cycle_id, code: c.code, breed: c.breed, status: c.status === 'CLOSED' ? 'DITUTUP' : 'SELESAI',
       dodDate: c.dod_date, dodQty: c.dod_qty, closedAt: c.closed_at, closeNote: c.close_note,
@@ -202,7 +210,13 @@ export async function buildBootstrap(user, batchCode) {
     anomalyState,
     harian: harian.map(h => ({ code: h.code, barn: h.barn_code, barnName: h.barn_name, pop: h.population, umur: h.umur_hari, masuk: h.masuk,
       pakanHariIni: +h.pakan_hari_ini, pakanKemarin: +h.pakan_kemarin, pakanRata3: h.hari_tercatat ? +h.pakan_3hari / h.hari_tercatat : null,
-      mati: h.mati, matiHariIni: h.mati_hari_ini })),
+      mati: h.mati, matiHariIni: h.mati_hari_ini,
+      pakanPagi: +h.pakan_pagi, pakanSore: +h.pakan_sore, pakanTotal: +h.pakan_total,
+      // Jatah kandang ini: gram sesuai umurnya x bebek hidup di kandang ini, dibagi dua (pagi & sore).
+      ...(() => { const g = jatahUmur(h.feed_plan, h.umur_hari); const kg = g != null ? g * h.population / 1000 : null; return { jatahGram: g, jatahKg: kg, jatahSesiKg: kg != null ? kg / 2 : null, jatahKhusus: !!h.feed_plan }; })(),
+      bobot: h.bobot_akhir == null ? null : +h.bobot_akhir, hariSejakTimbang: h.hari_sejak_timbang == null ? null : +h.hari_sejak_timbang,
+      // FCR kandang = pakan terpakai / pertambahan bobot hidup. Bobot DOD dikurangkan kalau ditimbang.
+      ...(() => { if (h.bobot_akhir == null) return { fcr: null }; const hidup = h.population * +h.bobot_akhir; const awal = h.dod_weight_kg > 0 ? h.masuk * +h.dod_weight_kg : 0; const tambah = hidup - awal; return { fcr: tambah > 0 && +h.pakan_total > 0 ? +h.pakan_total / tambah : null, fcrTanpaDod: !(h.dod_weight_kg > 0) }; })() })),
     mortUmur: mortUmur.map(m => ({ umur: +m.umur, n: m.n })),
     mortSebab: mortSebab.map(m => ({ sebab: m.cause, n: m.n })),
     stokPakanFarm: +stokFarm.kg,

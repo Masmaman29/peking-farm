@@ -10,6 +10,11 @@ import path from 'node:path';
 import argon2 from 'argon2';
 import { tx, audit, config } from './db.js';
 
+/* Jatah pakan: 5 angka gram/ekor/hari untuk rentang umur tetap. */
+const RENTANG_UMUR = [[1, 7], [8, 14], [15, 21], [22, 28], [29, 999]];
+const skemaJatah = z.array(z.number().nonnegative().max(1000)).length(5, 'Jatah pakan harus 5 angka (satu per rentang umur).');
+const jadiPlan = g => RENTANG_UMUR.map(([a, b], i) => [a, b, g[i]]);
+
 class ActionError extends Error { constructor(msg, code = 400) { super(msg); this.status = code; } }
 const deny = (msg = 'Role Anda tidak memiliki izin untuk aksi ini.') => { throw new ActionError(msg, 403); };
 const need = (user, roles) => { if (!roles.includes(user.role)) deny(); };
@@ -101,14 +106,16 @@ export const ACTIONS = {
   /* ---------------- INPUT OPERASIONAL ---------------- */
   async FEED_USAGE(c, p, user, file) {
     need(user, ['OWNER', 'MANAGER', 'ANAK_KANDANG']);
-    const v = z.object({ kg: z.number().positive().max(2000), barn: z.string(), feedType: z.string().optional() }).parse(p);
+    const v = z.object({ kg: z.number().positive().max(2000), barn: z.string(), feedType: z.string().optional(), sesi: z.enum(['PAGI', 'SORE']).optional() }).parse(p);
     await requirePhoto(c, file);
     const b = await barnId(c, v.barn, user); const cy = await cycleOfBarn(c, b, v.barn);
     const feed = (await c.query(`SELECT id FROM feed WHERE type=$1 LIMIT 1`, [v.feedType || 'GROWER'])).rows[0] || (await c.query('SELECT id FROM feed LIMIT 1')).rows[0];
-    const r = await c.query(`INSERT INTO feed_transaction(cycle_id,barn_id,feed_id,type,qty_kg,occurred_at,created_by) VALUES ($1,$2,$3,'USAGE',$4,now(),$5) RETURNING id`, [cy.id, b, feed.id, -v.kg, user.id]);
+    // Sesi tidak dipilih: ditentukan dari jam input (sebelum 12.00 WIB = pagi).
+    const sesi = v.sesi || (+new Date().toLocaleString('en-GB', { timeZone: 'Asia/Jakarta', hour: '2-digit', hour12: false }) < 12 ? 'PAGI' : 'SORE');
+    const r = await c.query(`INSERT INTO feed_transaction(cycle_id,barn_id,feed_id,type,qty_kg,occurred_at,created_by,sesi) VALUES ($1,$2,$3,'USAGE',$4,now(),$5,$6) RETURNING id`, [cy.id, b, feed.id, -v.kg, user.id, sesi]);
     const photo = await saveAttachment(c, file, 'feed_transaction', r.rows[0].id, 'pakan', user);
     await audit(c, user.id, 'CREATE', 'feed_transaction', `Input pakan ${v.kg} kg — Kandang ${v.barn}${photo ? ' — Bukti ' + photo : ''}`, r.rows[0].id);
-    return { id: r.rows[0].id, photo };
+    return { id: r.rows[0].id, photo, sesi };
   },
   async MORTALITY(c, p, user, file) {
     need(user, ['OWNER', 'MANAGER', 'ANAK_KANDANG']);
@@ -366,6 +373,7 @@ export const ACTIONS = {
       // Bobot DOD saat datang. Boleh kosong kalau tidak ditimbang.
       bobotDodKg: z.number().nonnegative().max(5).optional(),
       targetMortPct: z.number().nonnegative().max(100).optional(),
+      jatah: skemaJatah.optional(),
       // Bentuk sederhana untuk pola batch bergilir: satu batch, satu kandang.
       barn: z.string().min(1).optional(),
       qty: z.number().int().positive().optional(),
@@ -405,6 +413,7 @@ export const ACTIONS = {
     const cy = (await c.query(`INSERT INTO cycle(farm_id,code,breed,dod_date,dod_qty,dod_price,target_curve,target_days,status,stage,locked,created_by,dod_weight_kg,target_weight_min,target_weight_max,target_mort_pct)
       VALUES ($1,$2,COALESCE($3,'Bebek Peking'),$4,$5,$6,$7,$8,'ACTIVE','DOD_IN',true,$9,$10,$11,$12,$13) RETURNING id`,
       [farm.id, code, v.breed || null, v.dodDate, qty, v.dodPrice, JSON.stringify(curve), v.targetDays, user.id, bobotDod, v.targetBobotMin, bobotMax, targetMort])).rows[0].id;
+    if (v.jatah) await c.query('UPDATE cycle SET feed_plan=$1 WHERE id=$2', [JSON.stringify(jadiPlan(v.jatah)), cy]);
 
     for (const b of v.barns) {
       const bar = (await c.query('SELECT id,name,capacity FROM barn WHERE code=$1 AND is_active', [b.code.toUpperCase()])).rows[0];
@@ -529,7 +538,7 @@ export const ACTIONS = {
   /* Ubah target batch yang sedang berjalan. Jumlah/harga/tanggal DOD tetap terkunci. */
   async CYCLE_TARGET(c, p, user) {
     need(user, ['OWNER', 'MANAGER']);
-    const v = z.object({ code: z.string().min(1), targetDays: z.number().int().positive().max(200), targetBobotMin: z.number().positive().max(20), bobotDodKg: z.number().nonnegative().max(5).optional() }).parse(p);
+    const v = z.object({ code: z.string().min(1), targetDays: z.number().int().positive().max(200), targetBobotMin: z.number().positive().max(20), bobotDodKg: z.number().nonnegative().max(5).optional(), jatah: skemaJatah.optional() }).parse(p);
     const cy = (await c.query(`SELECT * FROM cycle WHERE code=$1 AND status='ACTIVE'`, [v.code])).rows[0];
     if (!cy) throw new ActionError('Batch tidak ditemukan atau sudah ditutup.');
     const dodLama = cy.dod_weight_kg != null && +cy.dod_weight_kg > 0 ? +cy.dod_weight_kg : null;
@@ -539,6 +548,10 @@ export const ACTIONS = {
     await c.query(`UPDATE cycle SET target_days=$1, target_weight_min=$2, target_weight_max=$2, dod_weight_kg=$3, target_curve=$4, updated_by=$5, updated_at=now() WHERE id=$6`,
       [v.targetDays, v.targetBobotMin, dod, JSON.stringify(curve), user.id, cy.id]);
     await audit(c, user.id, 'UPDATE', 'cycle', `Target batch ${cy.code} diubah — panen ${cy.target_days} → ${v.targetDays} hari; bobot ${+cy.target_weight_min} → ${v.targetBobotMin} kg; bobot DOD ${dodLama ?? 'kosong'} → ${dod ?? 'kosong'} kg`, cy.id);
+    if (v.jatah) {
+      await c.query('UPDATE cycle SET feed_plan=$1, updated_by=$2, updated_at=now() WHERE id=$3', [JSON.stringify(jadiPlan(v.jatah)), user.id, cy.id]);
+      await audit(c, user.id, 'UPDATE', 'cycle', `Jatah pakan batch ${cy.code} diubah — ${v.jatah.join(' / ')} g/ekor/hari`, cy.id);
+    }
     return { code: cy.code };
   },
   async CYCLE_CLOSE(c, p, user) {
@@ -777,7 +790,7 @@ export const ACTIONS = {
     const map = {
       targetMortalitasPct: 'target_mortalitas_pct', minStokPakanHari: 'min_stok_pakan_hari',
       batasMortalitasHarian: 'batas_mortalitas_harian', batasPakanPct: 'batas_deviasi_pakan_pct',
-      batasSelisihKg: 'batas_selisih_opname_kg', ambangApprovalRp: 'ambang_approval_rp'
+      batasSelisihKg: 'batas_selisih_opname_kg', ambangApprovalRp: 'ambang_approval_rp', jadwalTimbangHari: 'jadwal_timbang_hari'
     };
     const changes = [];
     for (const [k, key] of Object.entries(map)) if (p[k] !== undefined) {
@@ -790,6 +803,13 @@ export const ACTIONS = {
         await c.query(`UPDATE master_config SET value=$1::jsonb, updated_by=$2, updated_at=now() WHERE key=$3`, [JSON.stringify(val), user.id, key]);
         changes.push(`${key}: ${old} → ${val}`);
       }
+    }
+
+    /* Pakem jatah pakan farm */
+    if (p.pakemPakan !== undefined) {
+      const g = skemaJatah.parse(Array.isArray(p.pakemPakan) ? p.pakemPakan.map(Number) : []);
+      await c.query(`UPDATE master_config SET value=$1::jsonb, updated_by=$2, updated_at=now() WHERE key='pakem_pakan'`, [JSON.stringify(jadiPlan(g)), user.id]);
+      changes.push(`pakem_pakan: ${g.join(' / ')} g/ekor/hari`);
     }
 
     /* Jam kerja kandang */
