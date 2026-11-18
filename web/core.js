@@ -12,6 +12,8 @@ const fmtLong = d=>d.toLocaleDateString('id-ID',{day:'numeric',month:'long',year
 const rp = n=>'Rp '+Math.round(n).toLocaleString('id-ID');
 const num = (n,dec=0)=>(n===null||n===undefined||n===''||Number.isNaN(Number(n)))?'\u2014':Number(n).toLocaleString('id-ID',{minimumFractionDigits:dec,maximumFractionDigits:dec});
 const pct = (n,dec=1)=>num(n,dec)+'%';
+const rpAtau = n=>(n==null||!Number.isFinite(+n))?'\u2014':rp(n);
+const pctAtau = n=>(n==null||!Number.isFinite(+n))?'\u2014':pct(n);
 const dayOf = d=>DB.cycle?Math.floor((d-DB.cycle.dodDate)/86400000)+1:0;
 const dateOfDay = n=>DB.cycle?new Date(DB.cycle.dodDate.getTime()+(n-1)*86400000):new Date();
 const esc = s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -68,7 +70,7 @@ const calc = {
   feedOpnameLast(){return DB.feedOpname[DB.feedOpname.length-1];},
   feedStockAtDate(date){const bought=DB.feedPurchases.filter(p=>p.status==='APPROVED'&&p.date<=date).reduce((s,p)=>s+p.qty,0);const adj=DB.feedAdjust.filter(a=>a.date<=date).reduce((s,a)=>s+a.qty,0);const used=DB.feedRecords.filter(r=>r.date<=date).reduce((s,r)=>s+calc.feedVal(r),0);return bought+adj-used;},
   feedDiff(){const op=calc.feedOpnameLast();if(!op)return null;const theory=op.theoretical!=null?op.theoretical:calc.feedStockAtDate(op.date);return{op,theory,diff:theory-op.physical};},
-  feedAvg7(){const a=calc.feedByDay();const s=a.slice(-8,-1);return s.reduce((x,y)=>x+y,0)/s.length;},
+  feedAvg7(){const a=calc.feedByDay();const s=a.slice(-8,-1);return s.length?s.reduce((x,y)=>x+y,0)/s.length:0;},
   feedToday(){return calc.feedByDay().slice(-1)[0];},
   feedDaysLeft(){const avg=calc.feedAvg7()||1;return calc.feedStockTheory()/avg;},
   avgWeight(barn=null){const ws=DB.weights.filter(w=>!barn||w.barn===barn);if(!ws.length)return null;const last=ws[ws.length-1].date;const s=ws.filter(w=>w.date.getTime()===last.getTime());const n=s.reduce((x,w)=>x+w.n,0);return s.reduce((x,w)=>x+w.total,0)/n;},
@@ -105,7 +107,7 @@ const calc = {
   // bukan angka tetap karangan: kalau belum ada biaya tercatat, hasilnya 0 (bukan tebakan).
   projectedRemainingCost(){if(!DB.cycle)return 0;
     const daysLeft=Math.max(0,DB.cycle.targetDays-calc.day());
-    const feedNeed=daysLeft*calc.feedAvg7()*1.15;
+    const feedNeed=daysLeft*calc.feedAvg7();
     const feedShort=Math.max(0,feedNeed-calc.feedStockTheory());
     const nonFeed=calc.expensesApproved().filter(e=>e.cat!=='Pakan').reduce((t,e)=>t+e.amount,0);
     const perDay=calc.day()>0?nonFeed/calc.day():0;
@@ -129,8 +131,9 @@ const calc = {
   harvestedTotal(){return calc.popBalance().panen;},
   livePrice(){const p=DB.products.find(x=>x.type==='LIVE')||DB.products[0];return p?+p.price||0:0;},
   estRevenue(){const tb=calc.targetBobot();return tb?calc.projectedPop()*tb*calc.livePrice():0;},
-  estProfit(){return calc.estRevenue()-calc.modal()-calc.projectedRemainingCost();},
-  roi(){return calc.estProfit()/(calc.modal()+calc.projectedRemainingCost())*100;},
+  // Laba baru bisa diperkirakan kalau target bobot batch DAN harga jual produk sudah ada.
+  estProfit(){if(!calc.targetBobot()||!calc.livePrice())return null;const v=calc.estRevenue()-calc.modal()-calc.projectedRemainingCost();return Number.isFinite(v)?v:null;},
+  roi(){const l=calc.estProfit();const d=calc.modal()+calc.projectedRemainingCost();return l==null||!(d>0)?null:l/d*100;},
   salesRevenue(){return DB.orders.filter(o=>o.pay==='PAID').reduce((s,o)=>s+o.qty*(o.weight||o.qty*1.5)/o.qty*o.priceKg,0);},
   orderTotal(o){const w=o.weight||o.qty*(DB.products.find(p=>p.id===o.product).avgW);return w*o.priceKg;},
   productStock(p){if(p.stockFrom==='population')return calc.population();const it=DB.inventory.find(i=>i.id===p.stockFrom);return it?it.qty:0;},
@@ -142,10 +145,12 @@ const calc = {
     if(!f||!tf)lewat.push('FCR');else items.push(['FCR',Math.max(0,Math.min(100,100-(f.fcr-tf)*100))]);
     const tm=+MASTER.targetMortalitasPct||0;
     if(calc.bawaan('targetMortalitasPct')||!tm)lewat.push('Mortalitas');else items.push(['Mortalitas',Math.max(0,100-calc.mortPct()/tm*30)]);
-    items.push(['Kondisi Kandang',DB.barnCond.filter(c=>dayOf(c.date)===calc.day()).every(c=>c.litter==='Kering')?95:90]);
+    const kond=DB.barnCond.filter(c=>dayOf(c.date)===calc.day());
+    if(!kond.length)lewat.push('Kondisi Kandang');else items.push(['Kondisi Kandang',kond.every(c=>c.litter==='Kering')?95:90]);
     const avg7=calc.feedAvg7();const fd=avg7?calc.feedToday()/avg7:null;
     if(fd==null||!isFinite(fd))lewat.push('Konsumsi Pakan');else items.push(['Konsumsi Pakan',Math.max(0,100-Math.abs(fd-1)*40)]);
-    if(!items.length)return{score:null,items:[],lewat,status:'BELUM DIATUR'};
+    // Skor dari satu-dua komponen saja menyesatkan: tunggu minimal 3 komponen berdata.
+    if(items.length<3)return{score:null,items,lewat,status:'BELUM CUKUP DATA'};
     const score=Math.round(items.reduce((s,i)=>s+i[1],0)/items.length);
     return{score,items,lewat,status:score>=80?'NORMAL':score>=60?'WARNING':'CRITICAL'};},
   pendingApprovals(){const list=[];DB.corrections.filter(c=>c.status==='PENDING').forEach(c=>list.push({kind:'CORRECTION',id:c.id,date:c.requestedAt,title:`Koreksi pakan ${c.oldVal} kg → ${c.newVal} kg`,sub:`Alasan: ${c.reason}`,by:c.requestedBy,ref:c}));DB.orders.filter(o=>o.status==='PENDING_APPROVAL').forEach(o=>list.push({kind:'ORDER',id:o.id,date:o.date,title:`Penjualan ${o.qty} ekor ${DB.products.find(p=>p.id===o.product).name.replace('Bebek Peking ','')}`,sub:`ke ${DB.customers.find(c=>c.id===o.customer).name} — ${rp(calc.orderTotal(o))}`,by:o.user,ref:o}));DB.feedPurchases.filter(p=>p.status==='PENDING').forEach(p=>list.push({kind:'PURCHASE',id:p.id,date:p.date,title:`Pembelian pakan ${num(p.qty)} kg`,sub:`${p.vendor}${p.price?' — '+rp(p.qty*p.price):''}`,by:p.user,ref:p}));DB.expenses.filter(e=>e.status==='PENDING').forEach(e=>list.push({kind:'EXPENSE',id:e.id,date:e.date,title:`Biaya ${e.cat} ${rp(e.amount)}`,sub:e.vendor,by:e.user,ref:e}));return list.sort((a,b)=>b.date-a.date);},

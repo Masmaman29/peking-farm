@@ -526,6 +526,21 @@ export const ACTIONS = {
     return { code, total, avg: +avg.toFixed(3), remaining: left, photo };
   },
 
+  /* Ubah target batch yang sedang berjalan. Jumlah/harga/tanggal DOD tetap terkunci. */
+  async CYCLE_TARGET(c, p, user) {
+    need(user, ['OWNER', 'MANAGER']);
+    const v = z.object({ code: z.string().min(1), targetDays: z.number().int().positive().max(200), targetBobotMin: z.number().positive().max(20), bobotDodKg: z.number().nonnegative().max(5).optional() }).parse(p);
+    const cy = (await c.query(`SELECT * FROM cycle WHERE code=$1 AND status='ACTIVE'`, [v.code])).rows[0];
+    if (!cy) throw new ActionError('Batch tidak ditemukan atau sudah ditutup.');
+    const dodLama = cy.dod_weight_kg != null && +cy.dod_weight_kg > 0 ? +cy.dod_weight_kg : null;
+    const dod = v.bobotDodKg === undefined ? dodLama : (v.bobotDodKg > 0 ? v.bobotDodKg : null);
+    if (dod != null && dod >= v.targetBobotMin) throw new ActionError('Bobot DOD harus lebih kecil dari target bobot panen.');
+    const curve = dod != null ? [[1, dod], [v.targetDays, v.targetBobotMin]] : [[v.targetDays, v.targetBobotMin]];
+    await c.query(`UPDATE cycle SET target_days=$1, target_weight_min=$2, target_weight_max=$2, dod_weight_kg=$3, target_curve=$4, updated_by=$5, updated_at=now() WHERE id=$6`,
+      [v.targetDays, v.targetBobotMin, dod, JSON.stringify(curve), user.id, cy.id]);
+    await audit(c, user.id, 'UPDATE', 'cycle', `Target batch ${cy.code} diubah — panen ${cy.target_days} → ${v.targetDays} hari; bobot ${+cy.target_weight_min} → ${v.targetBobotMin} kg; bobot DOD ${dodLama ?? 'kosong'} → ${dod ?? 'kosong'} kg`, cy.id);
+    return { code: cy.code };
+  },
   async CYCLE_CLOSE(c, p, user) {
     need(user, ['OWNER']);
     const v = z.object({ code: z.string().trim().optional(), barn: z.string().trim().optional(), note: z.string().trim().optional(), carryRemaining: z.boolean().optional() }).parse(p);

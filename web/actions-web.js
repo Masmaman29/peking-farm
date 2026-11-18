@@ -234,6 +234,9 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
   case 'submit-expense':{if(!needPhoto(f))return;const r=await act('EXPENSE',{cat:v.cat,amount:+v.amount,vendor:v.vendor,ref:v.ref},file);if(r){closeModal();toast(r.pending?'Biaya dicatat, menunggu approval.':'Biaya dicatat.');render();}break;}
   case 'submit-opname':{if(!needPhoto(f))return;const r=await act('OPNAME',{physical:+v.physical,note:v.note},file);if(r){closeModal();toast(Math.abs(r.diff)>=MASTER.batasSelisihKg?`Opname tersimpan. Selisih ${num(r.diff)} kg — PERLU VERIFIKASI.`:'Opname tersimpan, stok sesuai.',Math.abs(r.diff)>=MASTER.batasSelisihKg?'warn':'ok');render();}break;}
   case 'submit-adjust':{const r=await act('STOCK_ADJUST',{qty:+v.qty,reason:v.reason});if(r){closeModal();toast('Penyesuaian disetujui dan dicatat.');render();}break;}
+  case 'submit-cycle-target':{const bobot=+v.bobot||0,hari=+v.days||0;if(!(bobot>0)||!(hari>0)){toast('Isi target bobot dan hari panen.','err');return;}
+   const r=await act('CYCLE_TARGET',{code:DB.cycle.code,targetDays:hari,targetBobotMin:bobot,bobotDodKg:(+v.dodGram||0)/1000});
+   if(r){closeModal();toast(`Target batch ${r.code} diubah: ${num(bobot,2)} kg di hari ke-${hari}.`);render();}break;}
   case 'submit-feed-use':{if(!v.jenis){toast('Pilih jenis pakannya.','err');return;}if(!needPhoto(f))return;const r=await act('FEED_USAGE',{kg:+v.kg,barn:v.barn,feedType:v.jenis},file);if(r){closeModal();toast(`Pakan ${num(+v.kg,1)} kg dicatat keluar ke ${barnName(v.barn)}.`);render();}break;}
   case 'submit-mort':{if(!needPhoto(f))return;const r=await act('MORTALITY',{qty:+v.qty,barn:v.barn,cause:v.cause},file);if(r){closeModal();toast('Kematian dicatat. Populasi diperbarui lewat transaksi.');render();}break;}
   case 'submit-weigh':{if(!needPhoto(f))return;const r=await act('WEIGHT',{n:+v.n,total:+v.total,barn:v.barn},file);if(r){closeModal();toast(`Timbang dicatat. Rata-rata ${num(r.avg,2)} kg.`);render();}break;}

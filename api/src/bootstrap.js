@@ -101,6 +101,28 @@ export async function buildBootstrap(user, batchCode) {
   const anomalyState = {};
   anomalies.forEach(a => { anomalyState[a.dedupe_key] = { status: a.status, note: a.verify_note, by: a.verified_by }; });
 
+  /* Ringkasan harian SEMUA kandang yang berisi ternak — pakan & kematian. */
+  const HARI = `(now() AT TIME ZONE 'Asia/Jakarta')::date`;
+  const TGL = `(t.occurred_at AT TIME ZONE 'Asia/Jakarta')::date`;
+  const PAKAI = `t.cycle_id=v.cycle_id AND t.barn_id=v.barn_id AND t.type='USAGE' AND t.status IN ('RECORDED','APPROVED') AND t.deleted_at IS NULL`;
+  const MATI = `m.cycle_id=v.cycle_id AND m.barn_id=v.barn_id AND m.deleted_at IS NULL AND m.status<>'SUPERSEDED'`;
+  const harian = await rows(`
+    SELECT v.code, v.barn_code, v.barn_name, v.population, v.umur_hari,
+      COALESCE((SELECT SUM(x.qty) FROM population_tx x WHERE x.cycle_id=v.cycle_id AND x.barn_id=v.barn_id AND x.qty>0),0)::int AS masuk,
+      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE ${PAKAI} AND ${TGL} = ${HARI}),0) AS pakan_hari_ini,
+      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE ${PAKAI} AND ${TGL} = ${HARI} - 1),0) AS pakan_kemarin,
+      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE ${PAKAI} AND ${TGL} BETWEEN ${HARI} - 3 AND ${HARI} - 1),0) AS pakan_3hari,
+      COALESCE((SELECT COUNT(DISTINCT ${TGL}) FROM feed_transaction t WHERE ${PAKAI} AND ${TGL} BETWEEN ${HARI} - 3 AND ${HARI} - 1),0)::int AS hari_tercatat,
+      COALESCE((SELECT SUM(m.qty) FROM mortality m WHERE ${MATI}),0)::int AS mati,
+      COALESCE((SELECT SUM(m.qty) FROM mortality m WHERE ${MATI} AND (m.occurred_at AT TIME ZONE 'Asia/Jakarta')::date = ${HARI}),0)::int AS mati_hari_ini
+    FROM v_batch_aktif v ORDER BY v.dod_date, v.barn_code`);
+  const mortUmur = await rows(`
+    SELECT ((m.occurred_at AT TIME ZONE 'Asia/Jakarta')::date - c.dod_date) + 1 AS umur, SUM(m.qty)::int AS n
+      FROM mortality m JOIN cycle c ON c.id = m.cycle_id
+     WHERE m.deleted_at IS NULL AND m.status<>'SUPERSEDED' GROUP BY 1 ORDER BY 1`);
+  const mortSebab = await rows(`SELECT cause, SUM(qty)::int AS n FROM mortality WHERE deleted_at IS NULL AND status<>'SUPERSEDED' GROUP BY cause ORDER BY 2 DESC`);
+  const stokFarm = await one(`SELECT COALESCE(SUM(qty_kg),0) AS kg FROM feed_transaction WHERE deleted_at IS NULL AND ((type='PURCHASE' AND status='APPROVED') OR (type='USAGE' AND status IN ('RECORDED','APPROVED')) OR (type='ADJUSTMENT' AND status='APPROVED'))`);
+
   return {
     now: new Date().toISOString(),
     master: {
@@ -162,5 +184,11 @@ export async function buildBootstrap(user, batchCode) {
     corrections: corrections.map(c => ({ id: c.id, type: { feed_transaction: 'FEED', mortality: 'MORT', weight_record: 'WEIGHT' }[c.entity_type], recordId: c.entity_id, field: c.field, oldVal: c.old_value, newVal: c.new_value, reason: c.reason, photo: c.photo, requestedBy: c.requested_by, requestedAt: c.requested_at, status: c.status, decidedBy: c.decided_by, decidedAt: c.decided_at, rejectReason: c.reject_reason })),
     audit: audit.map(a => ({ id: a.id, date: a.occurred_at, user: a.actor_id || 'SYSTEM', action: a.action, entity: a.entity_type, detail: a.detail, ref: a.entity_id || '-', hash: a.hash ? a.hash.slice(0, 8) : '' })),
     anomalyState,
+    harian: harian.map(h => ({ code: h.code, barn: h.barn_code, barnName: h.barn_name, pop: h.population, umur: h.umur_hari, masuk: h.masuk,
+      pakanHariIni: +h.pakan_hari_ini, pakanKemarin: +h.pakan_kemarin, pakanRata3: h.hari_tercatat ? +h.pakan_3hari / h.hari_tercatat : null,
+      mati: h.mati, matiHariIni: h.mati_hari_ini })),
+    mortUmur: mortUmur.map(m => ({ umur: +m.umur, n: m.n })),
+    mortSebab: mortSebab.map(m => ({ sebab: m.cause, n: m.n })),
+    stokPakanFarm: +stokFarm.kg,
   };
 }
