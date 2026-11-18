@@ -128,6 +128,9 @@ const calc = {
     const bal=calc.popBalance();if(bal.dod+bal.tIn-bal.mati-bal.jual-bal.tOut!==bal.akhir)out.push({id:'AN-POP',sev:'danger',title:'Populasi tidak balance',detail:'Jumlah transaksi tidak sama dengan populasi akhir.',date:DEMO_TODAY,page:'populasi',rule:'Balance populasi'});
     DB.inventory.filter(i=>i.qty<i.min).forEach(i=>out.push({id:'AN-INV-'+i.id,sev:'warn',title:`Stok ${i.name} di bawah minimum`,detail:`${num(i.qty)} ${i.unit} (minimum ${num(i.min)} ${i.unit}).`,date:DEMO_TODAY,page:'stok',rule:'Stok < minimum'}));
     if(calc.feedDaysLeft()<MASTER.minStokPakanHari)out.push({id:'AN-FEEDLOW',sev:'danger',title:`Stok pakan tersisa ${num(calc.feedDaysLeft(),0)} hari`,detail:'Segera ajukan pembelian.',date:DEMO_TODAY,page:'stok',rule:'Stok pakan < '+MASTER.minStokPakanHari+' hari'});
+    [...(DB.mortality||[]).map(r=>({r,jenis:'kematian',page:'populasi'})),...(DB.feedRecords||[]).map(r=>({r,jenis:'pakan',page:'pakan'})),...(DB.weights||[]).map(r=>({r,jenis:'timbangan',page:'pertumbuhan'}))]
+      .filter(x=>x.r.photoSource&&x.r.photoSource!=='kamera')
+      .forEach(x=>out.push({id:'AN-FOTO-'+x.r.id,sev:'warn',title:`Bukti ${x.jenis} diambil dari galeri, bukan kamera`,detail:`${barnName(x.r.barn)} — ${fmtDT(x.r.date)} oleh ${userName(x.r.user)}. Foto tidak diambil saat kejadian, jadi belum tentu kejadian hari itu.`,date:x.r.date,page:x.page,rule:'Foto bukti harus diambil dari kamera langsung'}));
     return out.map(a=>Object.assign(a,{state:DB.anomalyState[a.id]||{status:'OPEN'}}));},
   notifications(){if(!DB.cycle)return [];const n=[];calc.pendingApprovals().forEach(p=>n.push({t:'approval',title:p.title,sub:'Menunggu persetujuan',date:p.date,page:'persetujuan'}));calc.anomalies().filter(a=>a.state.status==='OPEN').forEach(a=>n.push({t:'anomaly',title:a.title,sub:'Perlu verifikasi',date:a.date,page:'anomali'}));DB.orders.filter(o=>o.status==='NEW').forEach(o=>n.push({t:'order',title:'Order baru dari website '+o.id,sub:DB.customers.find(c=>c.id===o.customer).name,date:o.date,page:'penjualan'}));return n.sort((a,b)=>b.date-a.date);},
 };
@@ -141,4 +144,4 @@ const barnName = b=>b==='ALL'?'Semua kandang':(DB.barns.find(x=>x.id===b)||{name
 const logAudit=()=>{}; // audit ditulis server
 
 /* ---------------- APP STATE ---------------- */
-const state={user:null,batch:null,lastPhone:null,page:'dashboard',busy:false,tab:null,range:'siklus',barn:'ALL',view:'login',sideOpen:false,notif:false,loading:false,akSuccess:null,aiOpen:false,aiMsgs:[],filters:{}};
+const state={user:null,batch:null,lastPhone:null,page:'dashboard',busy:false,tab:null,range:'siklus',barn:'ALL',view:'login',sideOpen:false,notif:false,loading:false,akSuccess:null,aiOpen:false,aiMsgs:[],filters:{},foto:{},kamera:null};

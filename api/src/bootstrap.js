@@ -48,12 +48,15 @@ export async function buildBootstrap(user, batchCode) {
   const users = await rows(`SELECT id,name,role,barn_id,is_active,phone,email,last_login_at,archived_at FROM app_user WHERE farm_id=$1 ORDER BY role,name`, [farm.id]);
 
   const popTx = cycle ? await rows(`SELECT id,occurred_at,type,barn_id,qty,created_by,ref_type,ref_id FROM population_tx WHERE cycle_id=$1 ORDER BY occurred_at`, [cycle.id]) : [];
-  const mortality = cycle ? await rows(`SELECT m.*, (SELECT file_url FROM attachment a WHERE a.entity_type='mortality' AND a.entity_id=m.id ORDER BY version DESC LIMIT 1) photo
+  const mortality = cycle ? await rows(`SELECT m.*, (SELECT file_url FROM attachment a WHERE a.entity_type='mortality' AND a.entity_id=m.id ORDER BY version DESC LIMIT 1) photo,
+            (SELECT a.source FROM attachment a WHERE a.entity_type='mortality' AND a.entity_id=m.id ORDER BY version DESC LIMIT 1) photo_source
      FROM mortality m WHERE cycle_id=$1 AND deleted_at IS NULL AND status<>'SUPERSEDED' ORDER BY occurred_at`, [cycle.id]) : [];
-  const feedAll = cycle ? await rows(`SELECT f.*, (SELECT file_url FROM attachment a WHERE a.entity_type='feed_transaction' AND a.entity_id=f.id ORDER BY version DESC LIMIT 1) photo
+  const feedAll = cycle ? await rows(`SELECT f.*, (SELECT file_url FROM attachment a WHERE a.entity_type='feed_transaction' AND a.entity_id=f.id ORDER BY version DESC LIMIT 1) photo,
+            (SELECT a.source FROM attachment a WHERE a.entity_type='feed_transaction' AND a.entity_id=f.id ORDER BY version DESC LIMIT 1) photo_source
      FROM feed_transaction f WHERE (cycle_id=$1 OR cycle_id IS NULL) AND deleted_at IS NULL ORDER BY occurred_at`, [cycle.id]) : [];
   const opname = await rows('SELECT * FROM feed_stock_opname ORDER BY occurred_at');
-  const weights = cycle ? await rows(`SELECT w.*, (SELECT file_url FROM attachment a WHERE a.entity_type='weight_record' AND a.entity_id=w.id ORDER BY version DESC LIMIT 1) photo
+  const weights = cycle ? await rows(`SELECT w.*, (SELECT file_url FROM attachment a WHERE a.entity_type='weight_record' AND a.entity_id=w.id ORDER BY version DESC LIMIT 1) photo,
+            (SELECT a.source FROM attachment a WHERE a.entity_type='weight_record' AND a.entity_id=w.id ORDER BY version DESC LIMIT 1) photo_source
      FROM weight_record w WHERE cycle_id=$1 AND deleted_at IS NULL AND status<>'SUPERSEDED' ORDER BY occurred_at`, [cycle.id]) : [];
   const health = cycle ? await rows('SELECT * FROM health_record WHERE cycle_id=$1 AND deleted_at IS NULL ORDER BY occurred_at', [cycle.id]) : [];
   const barnCond = cycle ? await rows('SELECT * FROM barn_condition WHERE cycle_id=$1 ORDER BY occurred_at DESC LIMIT 200', [cycle.id]) : [];
@@ -81,7 +84,7 @@ export async function buildBootstrap(user, batchCode) {
     const chain = []; let cur = f;
     while (cur.supersedes_id) { const p = feedAll.find(x => x.id === cur.supersedes_id); if (!p) break; chain.unshift(cur); cur = p; }
     const root = cur;
-    feedRecords.push({ id: f.id, rootId: root.id, date: f.occurred_at, barn: bcode[f.barn_id], kg: -Number(root.qty_kg), user: root.created_by, photo: f.photo || root.photo, status: f.status, locked: f.locked,
+    feedRecords.push({ id: f.id, rootId: root.id, date: f.occurred_at, barn: bcode[f.barn_id], kg: -Number(root.qty_kg), user: root.created_by, photo: f.photo || root.photo, photoSource: f.photo_source || root.photo_source, status: f.status, locked: f.locked,
       versions: chain.map(v => ({ id: v.id, kg: -Number(v.qty_kg), reason: v.reason || 'Koreksi', approvedBy: v.updated_by || v.created_by, date: v.created_at })) });
   });
   const feedPurchases = feedAll.filter(f => f.type === 'PURCHASE').map(p => ({ id: p.id, date: p.occurred_at, qty: Number(p.qty_kg), price: fin ? Number(p.price_per_kg) : null, vendor: p.vendor, ref: p.ref_no, user: p.created_by, status: p.status, locked: p.locked, note: p.reason }));
@@ -134,10 +137,10 @@ export async function buildBootstrap(user, batchCode) {
       profit: fin ? +cycleSummary.profit : null, dodCost: fin ? +cycleSummary.dod_cost : null,
     } : null,
     popTx: popTx.map(t => ({ id: t.id, date: t.occurred_at, type: t.type === 'DOD_IN' ? 'DOD_MASUK' : t.type === 'DEATH' ? 'KEMATIAN' : t.type === 'SALE' ? 'PENJUALAN' : t.type === 'TRANSFER_IN' ? 'TRANSFER_MASUK' : t.type === 'TRANSFER_OUT' ? 'TRANSFER_KELUAR' : t.type === 'HARVEST' ? 'PANEN' : t.type, barn: bcode[t.barn_id], qty: t.qty, user: t.created_by, ref: t.ref_id, locked: true })),
-    mortality: mortality.map(m => ({ id: m.id, date: m.occurred_at, barn: bcode[m.barn_id], qty: m.qty, cause: m.cause, note: m.note, photo: m.photo, user: m.created_by, status: m.status, locked: m.locked })),
+    mortality: mortality.map(m => ({ id: m.id, date: m.occurred_at, barn: bcode[m.barn_id], qty: m.qty, cause: m.cause, note: m.note, photo: m.photo, photoSource: m.photo_source, user: m.created_by, status: m.status, locked: m.locked })),
     feedRecords, feedPurchases, feedAdjust,
     feedOpname: opname.map(o => ({ id: o.id, date: o.occurred_at, physical: +o.physical_kg, theoretical: +o.theoretical_kg, user: o.created_by, note: o.note })),
-    weights: weights.map(w => ({ id: w.id, date: w.occurred_at, barn: bcode[w.barn_id], n: w.sample_n, total: +w.total_kg, avg: +w.avg_kg, user: w.created_by, photo: w.photo, locked: w.locked })),
+    weights: weights.map(w => ({ id: w.id, date: w.occurred_at, barn: bcode[w.barn_id], n: w.sample_n, total: +w.total_kg, avg: +w.avg_kg, user: w.created_by, photo: w.photo, photoSource: w.photo_source, locked: w.locked })),
     health: health.map(h => ({ id: h.id, date: h.occurred_at, barn: h.barn_id ? bcode[h.barn_id] : 'ALL', type: { VACCINE: 'Vaksinasi', VITAMIN: 'Vitamin', TREATMENT: 'Pengobatan', OBSERVATION: 'Observasi' }[h.type], item: h.item, dose: h.dose || '-', user: h.created_by, note: h.note || '' })),
     barnCond: barnCond.map(c => ({ id: c.id, date: c.occurred_at, barn: bcode[c.barn_id], temp: +c.temp_c, hum: +c.humidity_pct, litter: c.litter, water: c.water, behavior: c.behavior, user: c.created_by, note: c.note || '' })),
     expenses: expenses.map(e => ({ id: e.id, date: e.occurred_at, cat: { DOD: 'DOD', PAKAN: 'Pakan', VITAMIN: 'Vitamin', OBAT: 'Obat', LISTRIK: 'Listrik', GAS: 'Gas', SEKAM: 'Sekam', TENAGA_KERJA: 'Tenaga kerja', TRANSPORT: 'Transport', PERALATAN: 'Peralatan', MAINTENANCE: 'Maintenance', LAIN: 'Biaya lain' }[e.category], amount: +e.amount, vendor: e.vendor, ref: e.ref_no, user: e.created_by, status: e.status, locked: e.locked })),

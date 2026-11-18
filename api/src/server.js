@@ -89,13 +89,15 @@ app.get('/api/v1/audit/verify', async (req, reply) => {
 
 /* ---------- aksi (JSON atau multipart dengan field payload + photo) ---------- */
 app.post('/api/v1/actions/:type', { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }, async (req, reply) => {
-  let payload = {}, file = null;
+  let payload = {}, file = null, fotoSource = null;
   if (req.isMultipart()) {
     for await (const part of req.parts()) {
       if (part.type === 'file') { if (part.filename) { const buf = await part.toBuffer(); file = { filename: part.filename, mimetype: part.mimetype, toBuffer: async () => buf }; } }
       else if (part.fieldname === 'payload') payload = JSON.parse(part.value);
+      else if (part.fieldname === 'foto_source') fotoSource = part.value;
       else payload[part.fieldname] = part.value;
     }
+    if (file) file.source = fotoSource;
   } else payload = req.body || {};
   const result = await runAction(req.params.type, payload, req.user, file, req);
   return { ok: true, result };

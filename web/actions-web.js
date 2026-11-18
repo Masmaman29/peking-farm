@@ -6,13 +6,53 @@ async function act(type,payload,file){
   if(state.busy)return null;state.busy=true;
   try{
     let res;
-    if(file){const f=new FormData();f.append('payload',JSON.stringify(payload));f.append('photo',file);res=await api('/actions/'+type,{method:'POST',body:f});}
+    if(file){const f=new FormData();f.append('payload',JSON.stringify(payload));f.append('foto_source',file.pfSource||'galeri');f.append('photo',file);res=await api('/actions/'+type,{method:'POST',body:f});}
     else res=await api('/actions/'+type,{method:'POST',body:JSON.stringify(payload)});
-    await loadDB();return res.result||{};
+    await loadDB();if(file)hapusFoto();return res.result||{};
   }catch(e){toast(e.message||'Gagal menyimpan.','err');if(e.status===401){state.user=null;state.view='login';render();}return null;}
   finally{state.busy=false;}
 }
-const fileOf=form=>{const i=form.querySelector('input[type=file]');return i&&i.files&&i.files[0]?i.files[0]:null;};
+const fileOf=form=>{
+ const w=form.querySelector('[data-foto]');
+ if(w){const f=state.foto[w.dataset.foto];if(f&&f.file){f.file.pfSource=f.source;return f.file;}}
+ const i=form.querySelector('input[type=file]');return i&&i.files&&i.files[0]?i.files[0]:null;};
+
+/* ---------------- KAMERA DALAM APLIKASI ---------------- */
+async function bukaKamera(id){
+ if(!id)return;
+ state.kamera={id,error:null};renderLayer();
+ if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){state.kamera.error='Browser ini tidak mendukung kamera di dalam aplikasi. Pakai Chrome versi baru.';renderLayer();return;}
+ try{
+  const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:960}},audio:false});
+  if(state.kamera&&state.kamera.id===id){window.__kamStream=s;renderLayer();}
+  else s.getTracks().forEach(t=>t.stop());
+ }catch(err){
+  const nm=(err&&err.name)||'';
+  if(!state.kamera)return;
+  state.kamera.error=nm==='NotAllowedError'?'Izin kamera ditolak. Buka pengaturan browser, izinkan kamera untuk situs ini, lalu coba lagi.'
+   :nm==='NotFoundError'?'Tidak ada kamera di perangkat ini.'
+   :nm==='NotReadableError'?'Kamera sedang dipakai aplikasi lain. Tutup dulu aplikasi itu.'
+   :'Kamera gagal dibuka ('+(nm||'tidak diketahui')+').';
+  renderLayer();
+ }}
+function tutupKamera(){if(window.__kamStream){window.__kamStream.getTracks().forEach(t=>t.stop());window.__kamStream=null;}state.kamera=null;}
+function simpanFoto(id,blob,source){
+ if(state.foto[id]&&state.foto[id].url)URL.revokeObjectURL(state.foto[id].url);
+ const file=blob instanceof File?blob:new File([blob],'kamera-'+Date.now()+'.jpg',{type:'image/jpeg'});
+ state.foto[id]={file,url:URL.createObjectURL(blob),source,jam:new Date().toTimeString().slice(0,5)};}
+function jepretFoto(){
+ const v=document.getElementById('kam-video');const k=state.kamera;
+ if(!v||!k)return;
+ if(!v.videoWidth){toast('Kamera belum siap, tunggu sebentar.','warn');return;}
+ const w=Math.min(v.videoWidth,1280);const h=Math.round(v.videoHeight*(w/v.videoWidth));
+ const cv=document.createElement('canvas');cv.width=w;cv.height=h;
+ cv.getContext('2d').drawImage(v,0,0,w,h);
+ const id=k.id;
+ cv.toBlob(b=>{
+  if(!b){toast('Gagal menyimpan foto, coba lagi.','err');return;}
+  simpanFoto(id,b,'kamera');tutupKamera();render();
+ },'image/jpeg',0.82);}
+function hapusFoto(){Object.keys(state.foto||{}).forEach(k=>{const f=state.foto[k];if(f&&f.url)URL.revokeObjectURL(f.url);});state.foto={};}
 const needPhoto=form=>{if(MASTER.fotoWajib&&!fileOf(form)){toast('Foto bukti wajib dilampirkan.','err');const u=form.querySelector('.upload');if(u)u.style.borderColor='var(--danger)';return false;}return true;};
 
 async function login(phone,password){
@@ -88,6 +128,9 @@ document.addEventListener('click',e=>{
   case 'rep':state.filters.rep=d.v;render();break;
   case 'modal':openModal(d.m,{type:d.type,id:d.id,product:d.product,kind:d.kind});break;
   case 'modal-close':closeModal();break;
+  case 'kamera-buka':bukaKamera(d.id);break;
+  case 'kamera-tutup':tutupKamera();render();break;
+  case 'kamera-jepret':jepretFoto();break;
   case 'ai-open':state.aiOpen=true;renderLayer();break;
   case 'ai-close':state.aiOpen=false;renderLayer();break;
   case 'ai-ask':aiAsk(d.q);break;
@@ -107,7 +150,7 @@ document.addEventListener('click',e=>{
  }
 });
 document.addEventListener('change',e=>{const el=e.target.closest('[data-act]');if(!el)return;const a=el.dataset.act;
- if(a==='photo'){const t=document.getElementById(el.dataset.target);const name=el.files&&el.files[0]?el.files[0].name:'';if(t&&name){t.classList.add('has');t.innerHTML=`${ic('check',20)}<div style="margin-top:6px;font-weight:700">${esc(name)}</div><small>Foto terlampir · ${fmtDT(new Date())}</small>`;}}
+ if(a==='photo'){const fl=el.files&&el.files[0];const id=(el.id||'').replace(/^file-/,'');if(fl&&id){simpanFoto(id,fl,'galeri');tutupKamera();render();}return;}
  if(a==='audit-user'){state.filters.au=el.value;render();}if(a==='audit-action'){state.filters.aa=el.value;render();}
  if(a==='repbarn'){state.filters.barn=el.value;render();}if(a==='repday'){state.filters.day=+el.value;render();}
  if(a==='order-product'){const p=DB.products.find(x=>x.id===el.value);document.getElementById('o-p').value=p.price||0;orderCalc();}
@@ -126,7 +169,7 @@ document.addEventListener('input',e=>{const el=e.target;const a=el.dataset.act;
  if(a==='harvest-calc')harvestCalc();
  if(a==='calc-avg'){const n=+document.getElementById('ak-n').value,t=+document.getElementById('ak-total').value;document.getElementById('avg-val').textContent=n&&t?num(t/n,2)+' kg/ekor':'—';}
 });
-document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='k'){e.preventDefault();const s=document.getElementById('global-search');if(s)s.focus();}if(e.key==='Escape'){state.modal=null;state.aiOpen=false;state.notif=false;renderLayer();}
+document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='k'){e.preventDefault();const s=document.getElementById('global-search');if(s)s.focus();}if(e.key==='Escape'){if(state.kamera){tutupKamera();render();return;}state.modal=null;state.aiOpen=false;state.notif=false;renderLayer();}
  if(e.key==='Enter'&&e.target.id==='global-search'){e.preventDefault();const q=e.target.value.trim();if(!q)return;const map=[['pakan','pakan'],['populasi','populasi'],['mortal','populasi'],['bobot','pertumbuhan'],['fcr','pakan'],['keuangan','keuangan'],['laba','keuangan'],['order','penjualan'],['penjualan','penjualan'],['stok','stok'],['approval','persetujuan'],['persetujuan','persetujuan'],['audit','audit'],['anomali','anomali'],['laporan','laporan'],['user','pengguna']];const hit=map.find(([k])=>q.toLowerCase().includes(k));if(hit&&canPage(hit[1]))go(hit[1]);else{state.aiOpen=true;renderLayer();aiAsk(q);}}
 });
 /* ---------- Unduh laporan ----------

@@ -51,19 +51,41 @@ async function anyActiveCycle(c) {
   const r = await c.query(`SELECT * FROM cycle WHERE status='ACTIVE' ORDER BY dod_date LIMIT 1`);
   return r.rows[0] || null;
 }
+const jamJkt = d => new Date(d).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+/** Foto yang sha256-nya sudah pernah masuk ditolak — tidak bisa pakai foto lama. */
+async function tolakFotoDaurUlang(c, sha) {
+  const cfg = await config(c);
+  if (!cfg.foto_unik) return;
+  const r = await c.query(
+    `SELECT a.kind, a.uploaded_at, u.name
+       FROM attachment a JOIN app_user u ON u.id = a.uploaded_by
+      WHERE a.sha256 = $1
+      ORDER BY a.uploaded_at LIMIT 1`, [sha]);
+  if (!r.rows.length) return;
+  const d = r.rows[0];
+  throw new ActionError(
+    `Foto ini sudah pernah dipakai (bukti ${d.kind}, ${jamJkt(d.uploaded_at)}, oleh ${d.name}). Ambil foto baru sekarang.`);
+}
+
 async function saveAttachment(c, file, entity_type, entity_id, kind, user) {
   if (!file) return null;
   const buf = await file.toBuffer();
   const sha = crypto.createHash('sha256').update(buf).digest('hex');
+  await tolakFotoDaurUlang(c, sha);
   const ext = (path.extname(file.filename) || '.jpg').toLowerCase().slice(0, 6);
   const name = `${crypto.randomUUID()}${ext}`;
   const dir = process.env.UPLOAD_DIR || './data/uploads';
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, name), buf);
   const url = `/uploads/${name}`;
-  await c.query(`INSERT INTO attachment(entity_type,entity_id,kind,file_url,sha256,mime,size_bytes,uploaded_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-    [entity_type, entity_id, kind, url, sha, file.mimetype, buf.length, user.id]);
-  await audit(c, user.id, 'UPLOAD', 'attachment', `Upload ${kind} ${name} (sha256 ${sha.slice(0, 12)}…)`, entity_id);
+  const src = file.source === 'kamera' ? 'kamera' : 'galeri';
+  await c.query(`INSERT INTO attachment(entity_type,entity_id,kind,file_url,sha256,mime,size_bytes,uploaded_by,source) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [entity_type, entity_id, kind, url, sha, file.mimetype, buf.length, user.id, src]);
+  await audit(c, user.id, 'UPLOAD', 'attachment', `Upload ${kind} ${name} dari ${src} (sha256 ${sha.slice(0, 12)}…)`, entity_id);
+  if (src !== 'kamera') {
+    await notify(c, ['OWNER', 'MANAGER'], 'foto_galeri', `Bukti ${kind} diambil dari galeri`, `${user.name} mengunggah bukti bukan dari kamera langsung — perlu dicek.`, '/audit');
+  }
   return url;
 }
 const requirePhoto = async (c, file) => { const cfg = await config(c); if (cfg.foto_wajib && !file) throw new ActionError('Foto bukti wajib dilampirkan.'); };
