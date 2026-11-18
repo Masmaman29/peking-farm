@@ -89,8 +89,12 @@ const calc = {
     const feedShort=Math.max(0,feedNeed-calc.feedStockTheory());
     const nonFeed=calc.expensesApproved().filter(e=>e.cat!=='Pakan').reduce((t,e)=>t+e.amount,0);
     const perDay=calc.day()>0?nonFeed/calc.day():0;
-    return feedShort*MASTER.hargaPakanKg+daysLeft*perDay;},
-  projectedCostIsEstimate(){return calc.expensesApproved().filter(e=>e.cat!=='Pakan').length===0;},
+    // Pakai harga pakan yang benar-benar dibayar. Kalau belum pernah beli, 0 —
+    // lebih baik proyeksinya kurang daripada memakai angka isian yang mungkin basi.
+    const hrg=MASTER.hargaPakanRata||0;
+    return feedShort*hrg+daysLeft*perDay;},
+  hargaPakanDipakai(){return MASTER.hargaPakanRata||0;},
+  projectedCostIsEstimate(){return calc.expensesApproved().filter(e=>e.cat!=='Pakan').length===0||!MASTER.hargaPakanRata;},
   projectedPop(){const rate=calc.mortPct()/calc.day();const remain=DB.cycle.targetDays-calc.day();return Math.round(calc.population()*(1-rate/100*remain));},
   sum(){return DB.cycleSummary||null;},
   batches(){return DB.batches||[];},

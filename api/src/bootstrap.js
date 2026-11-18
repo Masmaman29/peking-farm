@@ -31,6 +31,7 @@ export async function buildBootstrap(user, batchCode) {
      ORDER BY dod_date`);
   // Populasi tiap kandang dari SELURUH batch, bukan hanya batch yang sedang
   // dibuka. Dipakai layar untuk tahu kandang mana yang benar-benar kosong.
+  const hargaPakanRata = await one('SELECT harga_kg FROM v_harga_pakan_rata');
   const barnPop = Object.fromEntries((await rows(
     `SELECT barn_code, SUM(population)::int n FROM v_batch_aktif GROUP BY barn_code`))
     .map(r => [r.barn_code, r.n]));
@@ -93,6 +94,9 @@ export async function buildBootstrap(user, batchCode) {
     now: new Date().toISOString(),
     master: {
       hargaDOD: +cfg.harga_dod, hargaPakanKg: +cfg.harga_pakan_kg,
+      // Harga pakan yang BENAR-BENAR dibayar, rata-rata tertimbang dari nota pembelian.
+      // Dipakai untuk proyeksi biaya, supaya tidak memakai angka isian yang mungkin basi.
+      hargaPakanRata: +(hargaPakanRata?.harga_kg || 0),
       targetPanenHari: +cfg.target_panen_hari, targetBobotMin: +cfg.target_bobot.min, targetBobotMax: +cfg.target_bobot.max, targetMortalitasPct: +cfg.target_mortalitas_pct,
       minStokPakanHari: +cfg.min_stok_pakan_hari, fotoWajib: !!cfg.foto_wajib, jamKerja: [cfg.jam_kerja.mulai, cfg.jam_kerja.selesai],
       kontakWhatsapp: cfg.kontak_whatsapp || '', kontakEmail: cfg.kontak_email || '',
