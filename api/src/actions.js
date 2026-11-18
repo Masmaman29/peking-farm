@@ -359,7 +359,13 @@ export const ACTIONS = {
       dodDate: z.string().min(8),
       dodPrice: z.number().nonnegative(),
       breed: z.string().trim().min(2).optional(),
-      targetDays: z.number().int().positive().max(200).optional(),
+      // Target milik batch ini, diketik pemilik. Tidak ada angka bawaan.
+      targetDays: z.number({ invalid_type_error: 'Isi target panen (hari).' }).int().positive().max(200),
+      targetBobotMin: z.number({ invalid_type_error: 'Isi target bobot panen (kg).' }).positive().max(20),
+      targetBobotMax: z.number().positive().max(20).optional(),
+      // Bobot DOD saat datang. Boleh kosong kalau tidak ditimbang.
+      bobotDodKg: z.number().nonnegative().max(5).optional(),
+      targetMortPct: z.number().nonnegative().max(100).optional(),
       // Bentuk sederhana untuk pola batch bergilir: satu batch, satu kandang.
       barn: z.string().min(1).optional(),
       qty: z.number().int().positive().optional(),
@@ -382,15 +388,23 @@ export const ACTIONS = {
 
     const n = +(await c.query('SELECT count(*) n FROM cycle WHERE farm_id=$1', [farm.id])).rows[0].n;
     const code = '#' + String(n + 1).padStart(3, '0');
-    const curve = (await c.query(`SELECT value FROM master_config WHERE key='kurva_target_bobot'`)).rows[0]?.value || [];
-    // Target panen diambil dari master data farm. Tidak ada angka bawaan di sini.
-    const hariPanenFarm = +((await c.query(`SELECT value FROM master_config WHERE key='target_panen_hari'`)).rows[0]?.value || 0);
-    if (!v.targetDays && !hariPanenFarm) throw new ActionError('Target panen (hari) belum diatur. Isi di Pengaturan \u2192 Master Data, atau tulis di form ini.');
+    // Kurva target batch ini dibangun dari angka yang pemilik ketik sendiri:
+    // titik awal bobot DOD (kalau ditimbang), titik akhir target panen.
+    const bobotDod = v.bobotDodKg && v.bobotDodKg > 0 ? v.bobotDodKg : null;
+    const bobotMax = v.targetBobotMax && v.targetBobotMax > 0 ? v.targetBobotMax : v.targetBobotMin;
+    if (bobotMax < v.targetBobotMin) throw new ActionError('Target bobot maksimum tidak boleh lebih kecil dari minimum.');
+    if (bobotDod != null && bobotDod >= v.targetBobotMin) throw new ActionError('Bobot DOD harus lebih kecil dari target bobot panen.');
+    const curve = bobotDod != null ? [[1, bobotDod], [v.targetDays, v.targetBobotMin]] : [[v.targetDays, v.targetBobotMin]];
+    // Target mortalitas memang tingkat farm (jarang berubah), jadi kalau tidak
+    // diketik di form, dipakai angka farm dari Pengaturan.
+    const mortFarm = +((await c.query(`SELECT value FROM master_config WHERE key='target_mortalitas_pct'`)).rows[0]?.value || 0);
+    const targetMort = v.targetMortPct ?? (mortFarm || null);
+    if (targetMort == null) throw new ActionError('Target mortalitas belum diatur. Isi di Pengaturan \u2192 Master Data.');
     const qty = v.barns.reduce((a, x) => a + x.qty, 0);
 
-    const cy = (await c.query(`INSERT INTO cycle(farm_id,code,breed,dod_date,dod_qty,dod_price,target_curve,target_days,status,stage,locked,created_by)
-      VALUES ($1,$2,COALESCE($3,'Bebek Peking'),$4,$5,$6,$7,COALESCE($8::int,$10::int),'ACTIVE','DOD_IN',true,$9) RETURNING id`,
-      [farm.id, code, v.breed || null, v.dodDate, qty, v.dodPrice, JSON.stringify(curve), v.targetDays || null, user.id, hariPanenFarm])).rows[0].id;
+    const cy = (await c.query(`INSERT INTO cycle(farm_id,code,breed,dod_date,dod_qty,dod_price,target_curve,target_days,status,stage,locked,created_by,dod_weight_kg,target_weight_min,target_weight_max,target_mort_pct)
+      VALUES ($1,$2,COALESCE($3,'Bebek Peking'),$4,$5,$6,$7,$8,'ACTIVE','DOD_IN',true,$9,$10,$11,$12,$13) RETURNING id`,
+      [farm.id, code, v.breed || null, v.dodDate, qty, v.dodPrice, JSON.stringify(curve), v.targetDays, user.id, bobotDod, v.targetBobotMin, bobotMax, targetMort])).rows[0].id;
 
     for (const b of v.barns) {
       const bar = (await c.query('SELECT id,name,capacity FROM barn WHERE code=$1 AND is_active', [b.code.toUpperCase()])).rows[0];
@@ -743,12 +757,12 @@ export const ACTIONS = {
   },
   async CONFIG_SAVE(c, p, user) {
     need(user, ['OWNER']);
+    // Hanya aturan tingkat farm. Target bobot, hari panen, dan bobot DOD
+    // diisi per batch di form Batch Baru, bukan di sini.
     const map = {
-      targetPanenHari: 'target_panen_hari', targetMortalitasPct: 'target_mortalitas_pct', minStokPakanHari: 'min_stok_pakan_hari',
-      // Angka yang dulu tersembunyi — sekarang milik pemilik farm.
-      bobotDodKg: 'bobot_dod_kg', batasMortalitasHarian: 'batas_mortalitas_harian',
-      batasPakanPct: 'batas_deviasi_pakan_pct', batasSelisihKg: 'batas_selisih_opname_kg',
-      ambangApprovalRp: 'ambang_approval_rp', targetFcr: 'target_fcr'
+      targetMortalitasPct: 'target_mortalitas_pct', minStokPakanHari: 'min_stok_pakan_hari',
+      batasMortalitasHarian: 'batas_mortalitas_harian', batasPakanPct: 'batas_deviasi_pakan_pct',
+      batasSelisihKg: 'batas_selisih_opname_kg', ambangApprovalRp: 'ambang_approval_rp'
     };
     const changes = [];
     for (const [k, key] of Object.entries(map)) if (p[k] !== undefined) {
@@ -763,23 +777,6 @@ export const ACTIONS = {
       }
     }
 
-    /* Kurva target bobot: daftar [umur hari, kg]. Diisi pemilik, bukan angka bawaan. */
-    if (p.targetCurve !== undefined) {
-      const titik = z.array(z.object({ hari: z.number().int().positive().max(200), kg: z.number().positive().max(20) }))
-        .min(2, 'Kurva butuh minimal 2 titik: umur awal dan umur panen.')
-        .max(20, 'Maksimal 20 titik.')
-        .parse(Array.isArray(p.targetCurve) ? p.targetCurve.map(t => ({ hari: +t.hari, kg: +t.kg })) : []);
-      const urut = titik.slice().sort((a, b) => a.hari - b.hari);
-      for (let i = 1; i < urut.length; i++) {
-        if (urut[i].hari === urut[i - 1].hari) throw new ActionError(`Umur ${urut[i].hari} hari ditulis dua kali.`);
-        if (urut[i].kg <= urut[i - 1].kg) throw new ActionError(`Bobot harus naik: hari ${urut[i].hari} (${urut[i].kg} kg) tidak lebih berat dari hari ${urut[i - 1].hari} (${urut[i - 1].kg} kg).`);
-      }
-      const nv = urut.map(t => [t.hari, t.kg]);
-      const old = (await c.query(`SELECT value FROM master_config WHERE key='kurva_target_bobot'`)).rows[0]?.value;
-      await c.query(`UPDATE master_config SET value=$1::jsonb, updated_by=$2, updated_at=now() WHERE key='kurva_target_bobot'`, [JSON.stringify(nv), user.id]);
-      changes.push(`kurva_target_bobot: ${(old || []).length} titik → ${nv.length} titik (panen hari ${nv[nv.length - 1][0]} = ${nv[nv.length - 1][1]} kg)`);
-    }
-
     /* Jam kerja kandang */
     if (p.jamMulai !== undefined || p.jamSelesai !== undefined) {
       const row = (await c.query(`SELECT value, updated_by FROM master_config WHERE key='jam_kerja'`)).rows[0];
@@ -791,13 +788,6 @@ export const ACTIONS = {
         await c.query(`UPDATE master_config SET value=$1::jsonb, updated_by=$2, updated_at=now() WHERE key='jam_kerja'`, [JSON.stringify(nv), user.id]);
         changes.push(`jam_kerja: ${old.mulai}-${old.selesai} → ${nv.mulai}-${nv.selesai}`);
       }
-    }
-    if (p.targetBobotMin !== undefined || p.targetBobotMax !== undefined) {
-      const row = (await c.query(`SELECT value, updated_by FROM master_config WHERE key='target_bobot'`)).rows[0];
-      const old = row.value;
-      const nv = { min: +(p.targetBobotMin ?? old.min), max: +(p.targetBobotMax ?? old.max) };
-      if (nv.max < nv.min) throw new ActionError('Target bobot maksimum tidak boleh lebih kecil dari minimum.');
-      if (nv.min !== +old.min || nv.max !== +old.max || !row.updated_by) { await c.query(`UPDATE master_config SET value=$1::jsonb, updated_by=$2, updated_at=now() WHERE key='target_bobot'`, [JSON.stringify(nv), user.id]); changes.push(`target_bobot: ${old.min}-${old.max} → ${nv.min}-${nv.max}`); }
     }
     // Kontak website: teks, bukan angka
     const teks = { kontakWhatsapp: 'kontak_whatsapp', kontakEmail: 'kontak_email', kontakAlamat: 'kontak_alamat', kontakJam: 'kontak_jam' };

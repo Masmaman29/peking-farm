@@ -75,9 +75,25 @@ const calc = {
   weightSeries(){const m={};DB.weights.forEach(w=>{const d=dayOf(w.date);m[d]=m[d]||{n:0,t:0};m[d].n+=w.n;m[d].t+=w.total;});return Object.keys(m).map(Number).sort((a,b)=>a-b).map(d=>({day:d,avg:m[d].t/m[d].n}));},
   // Angka yang belum pernah disetel pemilik farm tidak dipakai menghitung apa pun.
   bawaan(k){return (MASTER.bawaan||[]).includes(k);},
-  adaKurva(){const c=MASTER.targetCurve;return Array.isArray(c)&&c.length>=2&&!calc.bawaan('targetCurve');},
-  bobotDod(){const w=+MASTER.bobotDodKg||0;return (calc.bawaan('bobotDodKg')||w<=0)?null:w;},
-  target(day){if(!calc.adaKurva())return null;const c=MASTER.targetCurve;if(day<=c[0][0])return c[0][1];for(let i=1;i<c.length;i++){if(day<=c[i][0]){const [d0,w0]=c[i-1],[d1,w1]=c[i];return w0+(w1-w0)*(day-d0)/(d1-d0);}}return c[c.length-1][1];},
+  // Target milik BATCH, diketik pemilik saat batch dibuat. Bukan dari Pengaturan.
+  targetBobot(){const t=DB.cycle&&DB.cycle.targetWeight;return t&&t[0]>0?t[0]:null;},
+  targetBobotMax(){const t=DB.cycle&&DB.cycle.targetWeight;return t&&t[1]>0?t[1]:calc.targetBobot();},
+  bobotDod(){const w=DB.cycle?+DB.cycle.dodWeight||0:0;return w>0?w:null;},
+  /* Pembanding FCR: rata-rata batch yang sudah selesai. Kalau belum ada
+     batch selesai, FCR tetap ditampilkan tapi tidak dinilai bagus/jelek. */
+  fcrBatchLalu(){const v=(DB.prevCycles||[]).map(c=>c.fcr).filter(x=>x>0);return v.length?v.reduce((a,b)=>a+b,0)/v.length:0;},
+  /* Garis target batch ini: dari titik awal ke target panen.
+     Titik awal = bobot DOD kalau ditimbang, kalau tidak dari timbangan sampel
+     pertama — tetap data Abdur sendiri, bukan angka karangan. */
+  kurva(){if(!DB.cycle)return [];const tb=calc.targetBobot();const hp=DB.cycle.targetDays;
+   if(!tb||!hp)return [];
+   const dod=calc.bobotDod();
+   if(dod!=null)return [[1,dod],[hp,tb]];
+   const w=(DB.weights||[]).slice().sort((a,b)=>a.date-b.date)[0];
+   if(w){const d=dayOf(w.date);if(d<hp&&+w.avg<tb)return [[d,+w.avg],[hp,tb]];}
+   return [];},
+  adaKurva(){return calc.kurva().length>=2;},
+  target(day){const c=calc.kurva();if(c.length<2)return null;if(day<=c[0][0])return c[0][1];for(let i=1;i<c.length;i++){if(day<=c[i][0]){const [d0,w0]=c[i-1],[d1,w1]=c[i];return w0+(w1-w0)*(day-d0)/(d1-d0);}}return c[c.length-1][1];},
   weightGap(){const a=calc.avgWeight();if(a==null)return null;const t=calc.target(calc.day());if(!t)return null;return (a-t)/t*100;},
   fcr(){const w0=calc.bobotDod();if(w0==null)return null;const feed=calc.feedTotal();const w=calc.avgWeight();if(w==null||calc.day()<7)return null;const bio=calc.population()*w-DB.cycle.dodQty*w0;if(bio<=0)return null;return{fcr:feed/bio,feed,bio};},
   fcrSeries(){const w0=calc.bobotDod();if(w0==null)return [];const ws=calc.weightSeries();const fb=calc.feedByDay();return ws.map(p=>{const feed=fb.slice(0,p.day).reduce((a,b)=>a+b,0);const pop=calc.population(null,dateOfDay(p.day));const bio=pop*p.avg-DB.cycle.dodQty*w0;return{day:p.day,fcr:bio>0?feed/bio:null};});},
@@ -112,7 +128,7 @@ const calc = {
   batchBerikutnya(){const b=(DB.batches||[]).slice().sort((x,y)=>x.sisaHari-y.sisaHari);return b[0]||null;},
   harvestedTotal(){return calc.popBalance().panen;},
   livePrice(){const p=DB.products.find(x=>x.type==='LIVE')||DB.products[0];return p?+p.price||0:0;},
-  estRevenue(){return calc.projectedPop()*MASTER.targetBobotMin*calc.livePrice();},
+  estRevenue(){const tb=calc.targetBobot();return tb?calc.projectedPop()*tb*calc.livePrice():0;},
   estProfit(){return calc.estRevenue()-calc.modal()-calc.projectedRemainingCost();},
   roi(){return calc.estProfit()/(calc.modal()+calc.projectedRemainingCost())*100;},
   salesRevenue(){return DB.orders.filter(o=>o.pay==='PAID').reduce((s,o)=>s+o.qty*(o.weight||o.qty*1.5)/o.qty*o.priceKg,0);},
@@ -122,7 +138,7 @@ const calc = {
   healthScore(){const items=[];const lewat=[];
     const gap=calc.weightGap();
     if(gap==null)lewat.push('Pertumbuhan');else items.push(['Pertumbuhan',Math.max(0,Math.min(100,100+gap*2))]);
-    const f=calc.fcr();const tf=calc.bawaan('targetFcr')?0:(+MASTER.targetFcr||0);
+    const f=calc.fcr();const tf=calc.fcrBatchLalu();
     if(!f||!tf)lewat.push('FCR');else items.push(['FCR',Math.max(0,Math.min(100,100-(f.fcr-tf)*100))]);
     const tm=+MASTER.targetMortalitasPct||0;
     if(calc.bawaan('targetMortalitasPct')||!tm)lewat.push('Mortalitas');else items.push(['Mortalitas',Math.max(0,100-calc.mortPct()/tm*30)]);
@@ -160,4 +176,4 @@ const barnName = b=>b==='ALL'?'Semua kandang':(DB.barns.find(x=>x.id===b)||{name
 const logAudit=()=>{}; // audit ditulis server
 
 /* ---------------- APP STATE ---------------- */
-const state={user:null,batch:null,lastPhone:null,page:'dashboard',busy:false,tab:null,range:'siklus',barn:'ALL',view:'login',sideOpen:false,notif:false,loading:false,akSuccess:null,aiOpen:false,aiMsgs:[],filters:{},foto:{},kamera:null,kurva:null};
+const state={user:null,batch:null,lastPhone:null,page:'dashboard',busy:false,tab:null,range:'siklus',barn:'ALL',view:'login',sideOpen:false,notif:false,loading:false,akSuccess:null,aiOpen:false,aiMsgs:[],filters:{},foto:{},kamera:null};

@@ -14,10 +14,9 @@ export async function buildBootstrap(user, batchCode) {
   const cfg = await config();
   /* Angka yang belum pernah disetel orang = angka BAWAAN, bukan milik farm ini.
      Aplikasi menandainya, dan angka turunan dari kurva bawaan tidak dihitung. */
-  const bawaanKey = { target_panen_hari: 'targetPanenHari', target_bobot: 'targetBobot', target_mortalitas_pct: 'targetMortalitasPct',
-    min_stok_pakan_hari: 'minStokPakanHari', bobot_dod_kg: 'bobotDodKg', batas_mortalitas_harian: 'batasMortalitasHarian',
-    batas_deviasi_pakan_pct: 'batasPakanPct', batas_selisih_opname_kg: 'batasSelisihKg', ambang_approval_rp: 'ambangApprovalRp',
-    jam_kerja: 'jamKerja', kurva_target_bobot: 'targetCurve', target_fcr: 'targetFcr' };
+  const bawaanKey = { target_mortalitas_pct: 'targetMortalitasPct', min_stok_pakan_hari: 'minStokPakanHari',
+    batas_mortalitas_harian: 'batasMortalitasHarian', batas_deviasi_pakan_pct: 'batasPakanPct',
+    batas_selisih_opname_kg: 'batasSelisihKg', ambang_approval_rp: 'ambangApprovalRp', jam_kerja: 'jamKerja' };
   const bawaan = (await rows('SELECT key FROM master_config WHERE updated_by IS NULL'))
     .map(r => bawaanKey[r.key]).filter(Boolean);
   const farm = await one('SELECT * FROM farm ORDER BY created_at LIMIT 1');
@@ -107,13 +106,13 @@ export async function buildBootstrap(user, batchCode) {
       // Harga pakan yang BENAR-BENAR dibayar, rata-rata tertimbang dari nota pembelian.
       // Tidak ada harga isian: harga DOD dan pakan diketik dari nota tiap pembelian.
       hargaPakanRata: +(hargaPakanRata?.harga_kg || 0),
-      bobotDodKg: +(cfg.bobot_dod_kg || 0), targetFcr: +(cfg.target_fcr || 0),
-      targetPanenHari: +cfg.target_panen_hari, targetBobotMin: +cfg.target_bobot.min, targetBobotMax: +cfg.target_bobot.max, targetMortalitasPct: +cfg.target_mortalitas_pct,
+
+      targetMortalitasPct: +cfg.target_mortalitas_pct,
       minStokPakanHari: +cfg.min_stok_pakan_hari, fotoWajib: !!cfg.foto_wajib, jamKerja: [cfg.jam_kerja.mulai, cfg.jam_kerja.selesai],
       kontakWhatsapp: cfg.kontak_whatsapp || '', kontakEmail: cfg.kontak_email || '',
       kontakAlamat: cfg.kontak_alamat || '', kontakJam: cfg.kontak_jam || '',
       batasMortalitasHarian: +cfg.batas_mortalitas_harian, batasPakanPct: +cfg.batas_deviasi_pakan_pct, batasSelisihKg: +cfg.batas_selisih_opname_kg,
-      ambangApprovalRp: +cfg.ambang_approval_rp, targetCurve: cfg.kurva_target_bobot || [],
+      ambangApprovalRp: +cfg.ambang_approval_rp,
       bawaan,
     },
     farm: { id: farm.id, name: farm.name, location: farm.location },
@@ -125,7 +124,7 @@ export async function buildBootstrap(user, batchCode) {
       dodDate: b.dod_date, dodQty: b.dod_qty, targetDays: b.target_days, stage: b.stage,
       population: b.population, umur: b.umur_hari, panen: b.perkiraan_panen, sisaHari: b.sisa_hari,
     })),
-    cycle: cycle ? { id: cycle.id, code: cycle.code, breed: cycle.breed, status: 'AKTIF', dodDate: cycle.dod_date, dodQty: cycle.dod_qty, dodPrice: +cycle.dod_price, dodWeight: +cycle.dod_weight_kg, targetDays: cycle.target_days, targetWeight: [+cycle.target_weight_min, +cycle.target_weight_max], targetMort: +cycle.target_mort_pct, stage: cycle.stage, createdBy: cycle.created_by, createdAt: cycle.created_at } : null,
+    cycle: cycle ? { id: cycle.id, code: cycle.code, breed: cycle.breed, status: 'AKTIF', dodDate: cycle.dod_date, dodQty: cycle.dod_qty, dodPrice: +cycle.dod_price, dodWeight: +cycle.dod_weight_kg, targetDays: cycle.target_days, targetWeight: [+cycle.target_weight_min, +cycle.target_weight_max], targetCurve: cycle.target_curve || [], targetMort: +cycle.target_mort_pct, stage: cycle.stage, createdBy: cycle.created_by, createdAt: cycle.created_at } : null,
     prevCycles: prevCycles.map(c => ({
       id: c.cycle_id, code: c.code, breed: c.breed, status: c.status === 'CLOSED' ? 'DITUTUP' : 'SELESAI',
       dodDate: c.dod_date, dodQty: c.dod_qty, closedAt: c.closed_at, closeNote: c.close_note,

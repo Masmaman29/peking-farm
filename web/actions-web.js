@@ -17,16 +17,6 @@ const fileOf=form=>{
  if(w){const f=state.foto[w.dataset.foto];if(f&&f.file){f.file.pfSource=f.source;return f.file;}}
  const i=form.querySelector('input[type=file]');return i&&i.files&&i.files[0]?i.files[0]:null;};
 
-/* ---------------- KURVA TARGET BOBOT ---------------- */
-/* Nilai dibaca dari kolom sebelum render ulang, supaya isian tidak hilang
-   waktu baris ditambah atau dihapus. */
-function bacaKurva(){
- const n=(state.kurva||[]).length;const baru=[];
- for(let i=0;i<n;i++){
-  const h=document.querySelector(`[name="hari_${i}"]`);const k=document.querySelector(`[name="kg_${i}"]`);
-  baru.push({hari:h?h.value:'',kg:k?k.value:''});}
- state.kurva=baru;return baru;}
-
 /* ---------------- KAMERA DALAM APLIKASI ---------------- */
 async function bukaKamera(id){
  if(!id)return;
@@ -138,8 +128,6 @@ document.addEventListener('click',e=>{
   case 'rep':state.filters.rep=d.v;render();break;
   case 'modal':openModal(d.m,{type:d.type,id:d.id,product:d.product,kind:d.kind});break;
   case 'modal-close':closeModal();break;
-  case 'kurva-tambah':bacaKurva();state.kurva.push({hari:'',kg:''});render();break;
-  case 'kurva-hapus':bacaKurva();state.kurva.splice(+d.i,1);render();break;
   case 'kamera-buka':bukaKamera(d.id);break;
   case 'kamera-tutup':tutupKamera();render();break;
   case 'kamera-jepret':jepretFoto();break;
@@ -254,7 +242,11 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
   case 'submit-cycle':{const qty=+v.qty||0;
     if(!(qty>0)){toast('Isi jumlah DOD yang masuk.','err');return;}
     if(!v.barn){toast('Pilih kandangnya.','err');return;}
-    const r=await act('CYCLE_CREATE',{dodDate:v.date,dodPrice:+v.price,breed:v.breed,targetDays:+v.days,barn:v.barn,qty});
+    const bobot=+v.bobot||0;const hari=+v.days||0;
+    if(!(bobot>0)){toast('Isi target bobot panen (kg/ekor).','err');return;}
+    if(!(hari>0)){toast('Isi target panen (berapa hari).','err');return;}
+    const dodGram=+v.dodGram||0;
+    const r=await act('CYCLE_CREATE',{dodDate:v.date,dodPrice:+v.price,breed:v.breed,targetDays:hari,targetBobotMin:bobot,barn:v.barn,qty,...(dodGram>0?{bobotDodKg:dodGram/1000}:{})});
     if(r){closeModal();state.batch=r.code;toast(`Batch ${r.code} dimulai — ${num(qty)} ekor di ${barnName(v.barn)}.`);await loadDB();render();}break;}
   case 'submit-batch-move':{
     const r=await act('BATCH_MOVE',{from:v.from,to:v.to,qty:v.qty?+v.qty:undefined,note:v.note||undefined});
@@ -300,10 +292,6 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
   case 'submit-reject':reject(f.dataset.kind,f.dataset.id,v.reason);break;
   case 'submit-invin':{if(!needPhoto(f))return;const r=await act('INVENTORY_IN',{item:v.item,qty:+v.qty,ref:v.ref},file);if(r){closeModal();toast('Barang masuk dicatat.');render();}break;}
   case 'save-master':{const p={};Object.keys(v).forEach(k=>{if(String(v[k]).trim()!=='')p[k]=+v[k];});if(!Object.keys(p).length){toast('Tidak ada angka yang diisi.','warn');return;}const r=await act('CONFIG_SAVE',p);if(r){toast(r.changed?'Master data disimpan. Semua angka turunan dihitung ulang.':'Tidak ada perubahan.',r.changed?'ok':'warn');render();}break;}
-  case 'submit-kurva':{const titik=bacaKurva().filter(x=>String(x.hari).trim()!==''&&String(x.kg).trim()!=='').map(x=>({hari:+x.hari,kg:+x.kg}));
-   if(titik.length<2){toast('Isi minimal 2 umur: umur awal dan umur panen.','err');return;}
-   const r=await act('CONFIG_SAVE',{targetCurve:titik});
-   if(r){state.kurva=null;toast('Kurva target bobot disimpan. Angka ini sekarang milik farm Pak.','ok');render();}break;}
   case 'submit-siteorder':{state.busy=true;try{const r=await api('/public/orders',{method:'POST',body:JSON.stringify({name:v.name,phone:v.phone,product:v.product,qty:+v.qty,pickup:v.pickup,address:v.address,note:v.note})});openModal('sitedone',{order:{id:r.result.code,customerName:v.name,productName:r.result.productName,qty:r.result.qty,pickup:r.result.pickup}});}catch(err){toast(err.message,'err');}finally{state.busy=false;}break;}
  }
 });
