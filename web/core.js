@@ -66,13 +66,17 @@ const calc = {
   feedTotal(barn=null){return DB.feedRecords.filter(r=>!barn||r.barn===barn).reduce((s,r)=>s+calc.feedVal(r),0);},
   feedPurchased(){return DB.feedPurchases.filter(p=>p.status==='APPROVED').reduce((s,p)=>s+p.qty,0);},
   feedAdjusted(){return DB.feedAdjust.reduce((s,a)=>s+a.qty,0);},
-  feedStockTheory(){return calc.feedPurchased()+calc.feedAdjusted()-calc.feedTotal();},
+  // Stok gudang SELURUH farm (semua kandang, semua batch) — dihitung server.
+  feedStockTheory(){return DB&&DB.stokPakanFarm!=null?+DB.stokPakanFarm:calc.feedPurchased()+calc.feedAdjusted()-calc.feedTotal();},
+  pakaiFarmRata(){return DB&&+DB.pakaiFarmRata>0?+DB.pakaiFarmRata:0;},
+  stokKritis(){const d=calc.feedDaysLeft();return d!=null&&MASTER.minStokPakanHari>0&&d<MASTER.minStokPakanHari;},
   feedOpnameLast(){return DB.feedOpname[DB.feedOpname.length-1];},
   feedStockAtDate(date){const bought=DB.feedPurchases.filter(p=>p.status==='APPROVED'&&p.date<=date).reduce((s,p)=>s+p.qty,0);const adj=DB.feedAdjust.filter(a=>a.date<=date).reduce((s,a)=>s+a.qty,0);const used=DB.feedRecords.filter(r=>r.date<=date).reduce((s,r)=>s+calc.feedVal(r),0);return bought+adj-used;},
   feedDiff(){const op=calc.feedOpnameLast();if(!op)return null;const theory=op.theoretical!=null?op.theoretical:calc.feedStockAtDate(op.date);return{op,theory,diff:theory-op.physical};},
   feedAvg7(){const a=calc.feedByDay();const s=a.slice(-8,-1);return s.length?s.reduce((x,y)=>x+y,0)/s.length:0;},
   feedToday(){return calc.feedByDay().slice(-1)[0];},
-  feedDaysLeft(){const avg=calc.feedAvg7()||1;return calc.feedStockTheory()/avg;},
+  // Belum ada catatan pemakaian = belum bisa bilang cukup berapa hari.
+  feedDaysLeft(){const r=calc.pakaiFarmRata();return r>0?calc.feedStockTheory()/r:null;},
   avgWeight(barn=null){const ws=DB.weights.filter(w=>!barn||w.barn===barn);if(!ws.length)return null;const last=ws[ws.length-1].date;const s=ws.filter(w=>w.date.getTime()===last.getTime());const n=s.reduce((x,w)=>x+w.n,0);return s.reduce((x,w)=>x+w.total,0)/n;},
   weightSeries(){const m={};DB.weights.forEach(w=>{const d=dayOf(w.date);m[d]=m[d]||{n:0,t:0};m[d].n+=w.n;m[d].t+=w.total;});return Object.keys(m).map(Number).sort((a,b)=>a-b).map(d=>({day:d,avg:m[d].t/m[d].n}));},
   // Angka yang belum pernah disetel pemilik farm tidak dipakai menghitung apa pun.
@@ -164,7 +168,7 @@ const calc = {
     const dup={};DB.feedRecords.filter(r=>dayOf(r.date)===calc.day()).forEach(r=>{const k=r.barn;dup[k]=(dup[k]||0)+1;});Object.entries(dup).filter(([k,v])=>v>1).forEach(([k])=>out.push({id:'AN-DUP-'+k,sev:'warn',title:`Input pakan ganda hari ini di Kandang ${k}`,detail:'Dua input pakan tercatat pada hari yang sama untuk kandang yang sama.',date:DEMO_TODAY,page:'pakan',rule:'Input berulang per kandang/hari'}));
     const bal=calc.popBalance();if(bal.dod+bal.tIn-bal.mati-bal.jual-bal.tOut!==bal.akhir)out.push({id:'AN-POP',sev:'danger',title:'Populasi tidak balance',detail:'Jumlah transaksi tidak sama dengan populasi akhir.',date:DEMO_TODAY,page:'populasi',rule:'Balance populasi'});
     DB.inventory.filter(i=>i.qty<i.min).forEach(i=>out.push({id:'AN-INV-'+i.id,sev:'warn',title:`Stok ${i.name} di bawah minimum`,detail:`${num(i.qty)} ${i.unit} (minimum ${num(i.min)} ${i.unit}).`,date:DEMO_TODAY,page:'stok',rule:'Stok < minimum'}));
-    if(calc.feedDaysLeft()<MASTER.minStokPakanHari)out.push({id:'AN-FEEDLOW',sev:'danger',title:`Stok pakan tersisa ${num(calc.feedDaysLeft(),0)} hari`,detail:'Segera ajukan pembelian.',date:DEMO_TODAY,page:'stok',rule:'Stok pakan < '+MASTER.minStokPakanHari+' hari'});
+    if(calc.stokKritis())out.push({id:'AN-FEEDLOW',sev:'danger',title:`Stok pakan tersisa ${num(calc.feedDaysLeft(),0)} hari`,detail:'Segera ajukan pembelian.',date:DEMO_TODAY,page:'stok',rule:'Stok pakan < '+MASTER.minStokPakanHari+' hari'});
     [...(DB.mortality||[]).map(r=>({r,jenis:'kematian',page:'populasi'})),...(DB.feedRecords||[]).map(r=>({r,jenis:'pakan',page:'pakan'})),...(DB.weights||[]).map(r=>({r,jenis:'timbangan',page:'pertumbuhan'}))]
       .filter(x=>x.r.photoSource&&x.r.photoSource!=='kamera')
       .forEach(x=>out.push({id:'AN-FOTO-'+x.r.id,sev:'warn',title:`Bukti ${x.jenis} diambil dari galeri, bukan kamera`,detail:`${barnName(x.r.barn)} — ${fmtDT(x.r.date)} oleh ${userName(x.r.user)}. Foto tidak diambil saat kejadian, jadi belum tentu kejadian hari itu.`,date:x.r.date,page:x.page,rule:'Foto bukti harus diambil dari kamera langsung'}));

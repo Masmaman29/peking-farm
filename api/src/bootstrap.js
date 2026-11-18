@@ -123,6 +123,22 @@ export async function buildBootstrap(user, batchCode) {
   const mortSebab = await rows(`SELECT cause, SUM(qty)::int AS n FROM mortality WHERE deleted_at IS NULL AND status<>'SUPERSEDED' GROUP BY cause ORDER BY 2 DESC`);
   const stokFarm = await one(`SELECT COALESCE(SUM(qty_kg),0) AS kg FROM feed_transaction WHERE deleted_at IS NULL AND ((type='PURCHASE' AND status='APPROVED') OR (type='USAGE' AND status IN ('RECORDED','APPROVED')) OR (type='ADJUSTMENT' AND status='APPROVED'))`);
 
+  /* Stok gudang seluruh farm, dipecah per jenis pakan. */
+  const SAH = `t.deleted_at IS NULL AND ((t.type='PURCHASE' AND t.status='APPROVED') OR (t.type='USAGE' AND t.status IN ('RECORDED','APPROVED')) OR (t.type='ADJUSTMENT' AND t.status='APPROVED'))`;
+  const stokJenis = await rows(`
+    SELECT f.type::text AS jenis,
+           COALESCE(SUM(t.qty_kg) FILTER (WHERE t.type='PURCHASE'),0) AS beli,
+           COALESCE(-SUM(t.qty_kg) FILTER (WHERE t.type='USAGE'),0) AS pakai,
+           COALESCE(SUM(t.qty_kg),0) AS stok
+      FROM feed_transaction t JOIN feed f ON f.id = t.feed_id
+     WHERE ${SAH} GROUP BY f.type`);
+  /* Rata-rata pemakaian per hari seluruh farm, 7 hari terakhir yang ada catatannya (tanpa hari ini). */
+  const pakaiFarm = await one(`
+    SELECT COALESCE(-SUM(t.qty_kg),0) AS kg, COUNT(DISTINCT (t.occurred_at AT TIME ZONE 'Asia/Jakarta')::date)::int AS hari
+      FROM feed_transaction t
+     WHERE t.type='USAGE' AND t.status IN ('RECORDED','APPROVED') AND t.deleted_at IS NULL
+       AND (t.occurred_at AT TIME ZONE 'Asia/Jakarta')::date BETWEEN ${HARI} - 7 AND ${HARI} - 1`);
+
   return {
     now: new Date().toISOString(),
     master: {
@@ -190,5 +206,7 @@ export async function buildBootstrap(user, batchCode) {
     mortUmur: mortUmur.map(m => ({ umur: +m.umur, n: m.n })),
     mortSebab: mortSebab.map(m => ({ sebab: m.cause, n: m.n })),
     stokPakanFarm: +stokFarm.kg,
+    stokPakanJenis: stokJenis.map(x => ({ jenis: x.jenis, beli: +x.beli, pakai: +x.pakai, stok: +x.stok })),
+    pakaiFarmRata: pakaiFarm.hari ? +pakaiFarm.kg / pakaiFarm.hari : 0,
   };
 }
