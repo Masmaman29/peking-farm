@@ -162,6 +162,12 @@ export async function buildBootstrap(user, batchCode) {
       COALESCE((SELECT SUM(e.amount) FROM expense e WHERE e.cycle_id=c.id AND e.status='APPROVED' AND e.deleted_at IS NULL),0) AS lain
     FROM cycle c WHERE c.id=$1`, [cycle.id]) : null;
 
+  const biaya = cycle ? await rows(`
+    SELECT e.id, e.created_at, e.category::text AS kat, e.amount, e.vendor, e.ref_no, e.status::text AS status,
+           (SELECT name FROM app_user u WHERE u.id=e.created_by) AS oleh,
+           EXISTS (SELECT 1 FROM attachment a WHERE a.entity_type='expense' AND a.entity_id=e.id) AS ada_nota
+      FROM expense e WHERE e.cycle_id=$1 AND e.deleted_at IS NULL ORDER BY e.created_at DESC`, [cycle.id]) : [];
+
   /* Stok gudang seluruh farm, dipecah per jenis pakan. */
   const SAH = `t.deleted_at IS NULL AND ((t.type='PURCHASE' AND t.status='APPROVED') OR (t.type='USAGE' AND t.status IN ('RECORDED','APPROVED')) OR (t.type='ADJUSTMENT' AND t.status='APPROVED'))`;
   const stokJenis = await rows(`
@@ -257,6 +263,7 @@ export async function buildBootstrap(user, batchCode) {
       return { date: w.occurred_at, barn: bcode[w.barn_id], umur: +w.umur, pop: w.pop, bobot: +w.avg_kg, pakan: +w.pakan, fcr: tambah > 0 && +w.pakan > 0 ? +w.pakan / tambah : null }; }),
     panen: panen.map((x, i) => ({ code: x.code, inv: `INV-${String(cycle.code).replace(/\D/g, '')}-${String(i + 1).padStart(2, '0')}`, date: x.created_at, pembeli: x.pembeli || 'Pengepul', hp: x.hp && x.hp !== '-' ? x.hp : '',
       barn: bcode[x.barn_id], qty: x.qty, kg: +x.weight_kg, harga: +x.price_per_kg, total: Math.round(+x.weight_kg * +x.price_per_kg), pay: x.payment_status, note: x.note, timbangan: x.timbangan || null, oleh: x.oleh })),
+    biaya: biaya.map(e => ({ id: e.id, date: e.created_at, kat: e.kat, jumlah: Math.round(+e.amount), ket: e.vendor && e.vendor !== '-' ? e.vendor : '', status: e.status, oleh: e.oleh, nota: e.ada_nota })),
     // Uang batch ini terbuka untuk semua peran yang membuka halaman kandangnya.
     uang: uangRow ? { panen: Math.round(+uangRow.panen), dod: Math.round(+uangRow.dod), pakan: Math.round(+uangRow.pakan), pakanKg: +uangRow.pakan_kg, lain: Math.round(+uangRow.lain),
       laba: Math.round(+uangRow.panen - +uangRow.dod - +uangRow.pakan - +uangRow.lain) } : null,

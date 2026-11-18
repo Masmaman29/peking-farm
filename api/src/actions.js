@@ -269,6 +269,22 @@ export const ACTIONS = {
     await audit(c, user.id, 'CREATE', 'feed_transaction', `Pembelian pakan ${v.qty} kg — ${rp(v.qty * v.price)}${big ? ' (menunggu approval)' : ''}`, r.rows[0].id);
     return { id: r.rows[0].id, pending: big };
   },
+  /* Biaya tambahan satu kandang (obat, sekam, gas, dll). Opsional, boleh tanpa nota,
+     boleh dicatat anak kandang. DOD dan pakan tidak lewat sini: keduanya sudah dihitung sendiri. */
+  async BIAYA_KANDANG(c, p, user, file) {
+    need(user, ['OWNER', 'MANAGER', 'ADMIN', 'ANAK_KANDANG']);
+    const catMap = { Obat: 'OBAT', Vitamin: 'VITAMIN', Sekam: 'SEKAM', Listrik: 'LISTRIK', Gas: 'GAS', 'Tenaga kerja': 'TENAGA_KERJA', Transport: 'TRANSPORT', Peralatan: 'PERALATAN', Perbaikan: 'MAINTENANCE', Lainnya: 'LAIN' };
+    const v = z.object({ barn: z.string().min(1), cat: z.string(), amount: z.number().positive().max(1e10), ket: z.string().trim().max(200).optional() }).parse(p);
+    if (!catMap[v.cat]) throw new ActionError('Jenis biaya tidak dikenal.');
+    const bb = await barnId(c, v.barn, user); const cy = await cycleOfBarn(c, bb, v.barn);
+    const cfg = await config(c); const big = v.amount > +cfg.ambang_approval_rp;
+    const r = await c.query(`INSERT INTO expense(cycle_id,category,amount,vendor,ref_no,occurred_at,status,created_by) VALUES ($1,$2,$3,$4,$5,CURRENT_DATE,$6,$7) RETURNING id`,
+      [cy.id, catMap[v.cat], v.amount, v.ket || '-', file ? 'NOTA' : 'TANPA-NOTA', big ? 'PENDING' : 'APPROVED', user.id]);
+    if (big) { await approvalRow(c, 'expense', r.rows[0].id, user, 'OWNER'); await notify(c, ['OWNER'], 'approval_pending', 'Biaya kandang menunggu approval', `${v.cat} ${rp(v.amount)} — Kandang ${v.barn}`, '/persetujuan'); }
+    if (file) await saveAttachment(c, file, 'expense', r.rows[0].id, 'nota', user);
+    await audit(c, user.id, 'CREATE', 'expense', `Biaya ${v.cat} ${rp(v.amount)} — Kandang ${v.barn}, batch ${cy.code}${file ? '' : ' (tanpa nota)'}${big ? ' (menunggu approval)' : ''}`, r.rows[0].id);
+    return { id: r.rows[0].id, pending: big };
+  },
   async EXPENSE(c, p, user, file) {
     need(user, ['OWNER', 'ADMIN']);
     const catMap = { Vitamin: 'VITAMIN', Obat: 'OBAT', Listrik: 'LISTRIK', Gas: 'GAS', Sekam: 'SEKAM', 'Tenaga kerja': 'TENAGA_KERJA', Transport: 'TRANSPORT', Peralatan: 'PERALATAN', Maintenance: 'MAINTENANCE', 'Biaya lain': 'LAIN', DOD: 'DOD', Pakan: 'PAKAN' };

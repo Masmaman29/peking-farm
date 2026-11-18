@@ -250,6 +250,9 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
    if(!(+v.harga>0)){toast('Isi harga per kg.','err');return;}if(!needPhoto(f))return;
    const r=await act('HARVEST',{barn:v.barn,timbangan:tb,pricePerKg:+v.harga,customer:'NEW',customerName:v.nama,customerPhone:v.hp||undefined,pay:v.pay},file);
    if(r){state.modal={m:'invoice',opts:{id:r.code}};toast(`Panen dicatat: ${rp(r.total)}. Invoice dibuat.`);render();}break;}
+  case 'submit-biaya':{if(!v.cat){toast('Pilih jenis biayanya.','err');return;}if(!(+v.amount>0)){toast('Isi jumlah rupiahnya.','err');return;}
+   const r=await act('BIAYA_KANDANG',{barn:v.barn,cat:v.cat,amount:+v.amount,ket:v.ket||undefined},file);
+   if(r){closeModal();toast(r.pending?'Biaya dicatat, menunggu persetujuan Owner.':'Biaya dicatat. Laba batch dihitung ulang.');render();}break;}
   case 'submit-cond':{const r=await act('BARN_CONDITION',{barn:v.barn,temp:+v.temp,hum:+v.hum,litter:v.litter,water:v.water,behavior:v.behavior,note:v.note||undefined});if(r){closeModal();toast('Kondisi kandang dicatat.');render();}break;}
   case 'submit-feed-use':{if(!v.jenis){toast('Pilih jenis pakannya.','err');return;}if(!needPhoto(f))return;const r=await act('FEED_USAGE',{kg:+v.kg,barn:v.barn,feedType:v.jenis,sesi:v.sesi},file);if(r){closeModal();toast(`Pakan ${v.sesi==='PAGI'?'pagi':'sore'} ${num(+v.kg,1)} kg dicatat keluar ke ${barnName(v.barn)}.`);render();}break;}
   case 'submit-mort':{if(!needPhoto(f))return;const r=await act('MORTALITY',{qty:+v.qty,barn:v.barn,cause:v.cause},file);if(r){closeModal();toast('Kematian dicatat. Populasi diperbarui lewat transaksi.');render();}break;}
