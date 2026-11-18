@@ -39,6 +39,7 @@ export async function buildBootstrap(user, batchCode) {
   // Populasi tiap kandang dari SELURUH batch, bukan hanya batch yang sedang
   // dibuka. Dipakai layar untuk tahu kandang mana yang benar-benar kosong.
   const hargaPakanRata = await one('SELECT harga_kg FROM v_harga_pakan_rata');
+  const hargaJenis = await rows('SELECT jenis, harga_kg, kg_dibeli FROM v_harga_pakan_jenis');
   const barnPop = Object.fromEntries((await rows(
     `SELECT barn_code, SUM(population)::int n FROM v_batch_aktif GROUP BY barn_code`))
     .map(r => [r.barn_code, r.n]));
@@ -106,6 +107,7 @@ export async function buildBootstrap(user, batchCode) {
       // Harga pakan yang BENAR-BENAR dibayar, rata-rata tertimbang dari nota pembelian.
       // Tidak ada harga isian: harga DOD dan pakan diketik dari nota tiap pembelian.
       hargaPakanRata: +(hargaPakanRata?.harga_kg || 0),
+      hargaPakanJenis: hargaJenis.map(h => ({ jenis: h.jenis, harga: fin ? +h.harga_kg : null, kg: +h.kg_dibeli })),
 
       targetMortalitasPct: +cfg.target_mortalitas_pct,
       minStokPakanHari: +cfg.min_stok_pakan_hari, fotoWajib: !!cfg.foto_wajib, jamKerja: [cfg.jam_kerja.mulai, cfg.jam_kerja.selesai],
