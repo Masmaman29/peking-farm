@@ -313,3 +313,36 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
   }
   render();
 })();
+
+/* ---------------- TARIK KE BAWAH UNTUK REFRESH ----------------
+   Di posisi paling atas, tarik layar ke bawah: data diambil ulang tanpa
+   keluar dari aplikasi. Kalau ada versi aplikasi baru, tampilannya ikut
+   dimuat ulang. Dimatikan selama ada form terbuka / isian belum disimpan. */
+(function(){
+ const BATAS=72;let y0=null,dy=0,jalan=false;
+ const ind=document.createElement('div');ind.id='ptr';ind.setAttribute('aria-hidden','true');
+ ind.style.cssText='position:fixed;left:50%;top:calc(env(safe-area-inset-top,0px) + 8px);z-index:90;transform:translate(-50%,-70px);padding:8px 14px;border-radius:999px;background:#174A3A;border:1px solid rgba(168,208,141,.4);color:#F2F7F3;font:600 12.5px/1 var(--font);box-shadow:0 8px 24px rgba(0,0,0,.35);pointer-events:none;transition:transform .18s,opacity .18s;opacity:0;white-space:nowrap';
+ document.addEventListener('DOMContentLoaded',()=>document.body.appendChild(ind));if(document.body)document.body.appendChild(ind);
+ const tampil=(px,teks)=>{ind.textContent=teks;ind.style.opacity=px>0?'1':'0';ind.style.transform=`translate(-50%,${Math.min(px,BATAS+18)-70}px)`;};
+ const adaIsian=()=>{for(const el of document.querySelectorAll('#root form input,#root form textarea,#root form select')){
+   if(el.type==='hidden'||el.type==='file'||el.disabled||el.id==='global-search')continue;
+   if(el.tagName==='SELECT'){if([...el.options].some(o=>o.selected!==o.defaultSelected))return true;}
+   else if(el.type==='checkbox'||el.type==='radio'){if(el.checked!==el.defaultChecked)return true;}
+   else if(el.value!==el.defaultValue)return true;}return false;};
+ const boleh=()=>!jalan&&state.user&&DB&&state.view!=='site'&&!state.modal&&!state.kamera&&!state.aiOpen&&!state.busy&&!state.sideOpen&&!Object.keys(state.foto||{}).length;
+ const diAtas=t=>{for(let el=t;el&&el!==document.documentElement;el=el.parentElement){if(el.scrollTop>0)return false;}return (window.scrollY||0)<=0;};
+ let versi=null;const ambilVersi=()=>fetch('/versi.json?t='+Date.now(),{cache:'no-store'}).then(r=>r.ok?r.json():null).then(j=>j&&j.commit?j.commit:null).catch(()=>null);
+ ambilVersi().then(v=>versi=v);
+ async function segarkan(){jalan=true;tampil(BATAS,'Memuat data terbaru…');
+  try{const v=await ambilVersi();
+   if(v&&versi&&v!==versi){tampil(BATAS,'Ada versi baru, memuat ulang…');location.reload();return;}
+   if(v&&!versi)versi=v;
+   await loadDB();render();toast('Data diperbarui.');
+  }catch(e){toast(e&&e.status===401?'Sesi habis, silakan login lagi.':'Gagal memuat. Periksa koneksi.','err');if(e&&e.status===401){state.user=null;state.view='login';render();}}
+  finally{jalan=false;tampil(0,'');}}
+ window.segarkanData=segarkan;
+ document.addEventListener('touchstart',e=>{y0=null;dy=0;if(e.touches.length!==1||!boleh()||!diAtas(e.target)||adaIsian())return;y0=e.touches[0].clientY;},{passive:true});
+ document.addEventListener('touchmove',e=>{if(y0===null)return;dy=e.touches[0].clientY-y0;if(dy<=0){tampil(0,'');return;}const px=dy*0.55;tampil(px,px>=BATAS?'Lepas untuk refresh':'Tarik untuk refresh');},{passive:true});
+ const lepas=()=>{if(y0===null)return;const cukup=dy*0.55>=BATAS;y0=null;dy=0;if(cukup)segarkan();else tampil(0,'');};
+ document.addEventListener('touchend',lepas,{passive:true});document.addEventListener('touchcancel',()=>{y0=null;dy=0;if(!jalan)tampil(0,'');},{passive:true});
+})();
