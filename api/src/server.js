@@ -78,7 +78,7 @@ app.post('/api/v1/auth/logout', async (req, reply) => {
 app.get('/api/v1/auth/me', async req => req.user);
 
 /* ---------- data ---------- */
-app.get('/api/v1/bootstrap', async req => buildBootstrap(req.user));
+app.get('/api/v1/bootstrap', async req => buildBootstrap(req.user, req.query?.batch));
 app.get('/api/v1/notifications', async req => rows('SELECT * FROM notification WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50', [req.user.id]));
 app.post('/api/v1/notifications/read', async req => { await q('UPDATE notification SET read_at=now() WHERE user_id=$1 AND read_at IS NULL', [req.user.id]); return { ok: true }; });
 app.get('/api/v1/audit/verify', async (req, reply) => {

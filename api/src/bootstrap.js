@@ -8,14 +8,39 @@ import { rows, one, config } from './db.js';
 
 const finRoles = new Set(['OWNER', 'ADMIN']);
 
-export async function buildBootstrap(user) {
+export async function buildBootstrap(user, batchCode) {
   const fin = finRoles.has(user.role);
   const ak = user.role === 'ANAK_KANDANG';
   const cfg = await config();
   const farm = await one('SELECT * FROM farm ORDER BY created_at LIMIT 1');
   const barns = await rows('SELECT id,code,name,capacity,note,is_active FROM barn WHERE farm_id=$1 ORDER BY code', [farm.id]);
   const bcode = Object.fromEntries(barns.map(b => [b.id, b.code]));
-  const cycle = await one(`SELECT * FROM cycle WHERE farm_id=$1 AND status='ACTIVE' ORDER BY dod_date DESC LIMIT 1`, [farm.id]);
+  // Semua batch yang sedang berjalan. Satu baris per batch, dengan kandang
+  // yang sedang ditempatinya (bisa dua kandang kalau sedang pindah).
+  const batches = await rows(`
+    SELECT cycle_id, code, dod_date, dod_qty, target_days, stage,
+           SUM(population)::int           AS population,
+           MIN(umur_hari)::int            AS umur_hari,
+           MIN(perkiraan_panen)           AS perkiraan_panen,
+           MIN(sisa_hari)::int            AS sisa_hari,
+           string_agg(barn_name, ' + ' ORDER BY population DESC) AS barn_names,
+           (array_agg(barn_code ORDER BY population DESC))[1]    AS barn_code,
+           (array_agg(barn_name ORDER BY population DESC))[1]    AS barn_name
+      FROM v_batch_aktif
+     GROUP BY cycle_id, code, dod_date, dod_qty, target_days, stage
+     ORDER BY dod_date`);
+  // Populasi tiap kandang dari SELURUH batch, bukan hanya batch yang sedang
+  // dibuka. Dipakai layar untuk tahu kandang mana yang benar-benar kosong.
+  const barnPop = Object.fromEntries((await rows(
+    `SELECT barn_code, SUM(population)::int n FROM v_batch_aktif GROUP BY barn_code`))
+    .map(r => [r.barn_code, r.n]));
+
+  // Batch yang sedang dibuka di layar: yang diminta, atau yang paling tua
+  // (paling dekat panen) supaya yang terpenting muncul duluan.
+  const pilih = batchCode && batches.find(b => b.code === batchCode);
+  const cycle = (pilih || batches[0])
+    ? await one('SELECT * FROM cycle WHERE id=$1', [(pilih || batches[0]).cycle_id])
+    : await one(`SELECT * FROM cycle WHERE farm_id=$1 AND status='ACTIVE' ORDER BY dod_date LIMIT 1`, [farm.id]);
   const prevCycles = await rows(`SELECT s.* FROM v_cycle_summary s JOIN cycle c ON c.id=s.cycle_id
      WHERE c.farm_id=$1 AND c.status<>'ACTIVE' ORDER BY s.dod_date DESC`, [farm.id]);
   const cycleSummary = cycle ? await one('SELECT * FROM v_cycle_summary WHERE cycle_id=$1', [cycle.id]) : null;
@@ -78,6 +103,12 @@ export async function buildBootstrap(user) {
     farm: { id: farm.id, name: farm.name, location: farm.location },
     users: users.map(u => ({ id: u.id, name: u.name, role: u.role, barn: bcode[u.barn_id] || null, active: u.is_active, phone: u.phone, email: u.email, lastLogin: u.last_login_at, archived: !!u.archived_at })),
     barns: barns.map(b => ({ id: b.code, uuid: b.id, name: b.name, cap: b.capacity, note: b.note, active: b.is_active })),
+    barnPop,
+    batches: batches.map(b => ({
+      id: b.cycle_id, code: b.code, barn: b.barn_code, barnName: b.barn_name, barnNames: b.barn_names,
+      dodDate: b.dod_date, dodQty: b.dod_qty, targetDays: b.target_days, stage: b.stage,
+      population: b.population, umur: b.umur_hari, panen: b.perkiraan_panen, sisaHari: b.sisa_hari,
+    })),
     cycle: cycle ? { id: cycle.id, code: cycle.code, breed: cycle.breed, status: 'AKTIF', dodDate: cycle.dod_date, dodQty: cycle.dod_qty, dodPrice: +cycle.dod_price, dodWeight: +cycle.dod_weight_kg, targetDays: cycle.target_days, targetWeight: [+cycle.target_weight_min, +cycle.target_weight_max], targetMort: +cycle.target_mort_pct, stage: cycle.stage, createdBy: cycle.created_by, createdAt: cycle.created_at } : null,
     prevCycles: prevCycles.map(c => ({
       id: c.cycle_id, code: c.code, breed: c.breed, status: c.status === 'CLOSED' ? 'DITUTUP' : 'SELESAI',

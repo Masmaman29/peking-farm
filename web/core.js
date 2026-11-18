@@ -38,10 +38,17 @@ function hydrate(b){
   const d=x=>{if(!x)return x;['date','dodDate','createdAt','requestedAt','decidedAt','lastLogin','pickup'].forEach(k=>{if(x[k]!==undefined)x[k]=toDate(x[k]);});if(x.versions)x.versions.forEach(v=>v.date=toDate(v.date));return x;};
   ['users','popTx','mortality','feedRecords','feedPurchases','feedAdjust','feedOpname','weights','health','barnCond','expenses','invTx','orders','corrections','audit','prevCycles'].forEach(k=>(b[k]||[]).forEach(d));
   if(b.cycle){d(b.cycle);b.cycle.dodDate.setHours(0,0,0,0);}
+  (b.batches||[]).forEach(x=>{x.dodDate=toDate(x.dodDate);x.panen=toDate(x.panen);});
   b.products.forEach(p=>p.priceKg=p.price);
   return b;
 }
-async function loadDB(){const b=await api('/bootstrap');DB=hydrate(b);MASTER=b.master;DEMO_TODAY=new Date(b.now);return DB;}
+async function loadDB(batch){
+  const q = batch||state.batch ? '?batch='+encodeURIComponent(batch||state.batch) : '';
+  const b=await api('/bootstrap'+q);
+  DB=hydrate(b);MASTER=b.master;DEMO_TODAY=new Date(b.now);
+  // batch yang benar-benar dibuka server (bisa beda kalau yang diminta sudah ditutup)
+  state.batch = DB.cycle ? DB.cycle.code : null;
+  return DB;}
 let MASTER={};let DEMO_TODAY=new Date();
 /* ---------------- DERIVED CALCULATIONS (single source of truth) ---------------- */
 const calc = {
@@ -86,6 +93,15 @@ const calc = {
   projectedCostIsEstimate(){return calc.expensesApproved().filter(e=>e.cat!=='Pakan').length===0;},
   projectedPop(){const rate=calc.mortPct()/calc.day();const remain=DB.cycle.targetDays-calc.day();return Math.round(calc.population()*(1-rate/100*remain));},
   sum(){return DB.cycleSummary||null;},
+  batches(){return DB.batches||[];},
+  // Isi kandang menurut SEMUA batch (calc.population hanya batch yang dibuka)
+  isiKandang(code){return (DB.barnPop||{})[code]||0;},
+  kandangKosong(){return barnsActive().filter(b=>calc.isiKandang(b.id)===0);},
+  kandangTerisi(){return barnsActive().filter(b=>calc.isiKandang(b.id)>0);},
+  batchAktif(){return (DB.batches||[]).length;},
+  populasiFarm(){return (DB.batches||[]).reduce((t,b)=>t+b.population,0);},
+  // batch yang panennya paling dekat (termasuk yang sudah lewat targetnya)
+  batchBerikutnya(){const b=(DB.batches||[]).slice().sort((x,y)=>x.sisaHari-y.sisaHari);return b[0]||null;},
   harvestedTotal(){return calc.popBalance().panen;},
   livePrice(){const p=DB.products.find(x=>x.type==='LIVE')||DB.products[0];return p?+p.price||0:0;},
   estRevenue(){return calc.projectedPop()*MASTER.targetBobotMin*1.1*calc.livePrice();},
@@ -121,4 +137,4 @@ const barnName = b=>b==='ALL'?'Semua kandang':(DB.barns.find(x=>x.id===b)||{name
 const logAudit=()=>{}; // audit ditulis server
 
 /* ---------------- APP STATE ---------------- */
-const state={user:null,page:'dashboard',busy:false,tab:null,range:'siklus',barn:'ALL',view:'login',sideOpen:false,notif:false,loading:false,akSuccess:null,aiOpen:false,aiMsgs:[],filters:{}};
+const state={user:null,batch:null,lastPhone:null,page:'dashboard',busy:false,tab:null,range:'siklus',barn:'ALL',view:'login',sideOpen:false,notif:false,loading:false,akSuccess:null,aiOpen:false,aiMsgs:[],filters:{}};

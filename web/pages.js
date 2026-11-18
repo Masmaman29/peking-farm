@@ -215,25 +215,68 @@ function financeCycleCard(){const c=calc.costByCat();const top=Object.entries(c)
 function barnPerfCard(){return `<div class="card"><div class="card-h"><h3>Kinerja per Kandang</h3></div><div class="grid" style="grid-template-columns:1fr 1fr;gap:10px">${['A','B'].map(b=>{const w=calc.avgWeight(b);const m=calc.mortTotal(b);const cond=DB.barnCond.filter(c=>c.barn===b)[0];return `<div class="barn-card"><div class="hd"><b>${barnName(b)}</b>${cond&&cond.litter!=='Kering'?badge('warn','CEK SEKAM'):badge('ok','NORMAL')}</div><div class="kv"><span>Populasi</span><b class="num">${num(calc.population(b))} ekor</b><span>Bobot</span><b class="num">${num(w,2)} kg</b><span>Mati</span><b class="num">${m} ekor</b><span>Pakan hari ini</span><b class="num">${num(DB.feedRecords.filter(r=>r.barn===b&&dayOf(r.date)===calc.day()).reduce((s,r)=>s+calc.feedVal(r),0))} kg</b><span>PIC</span><b>${DB.users.filter(u=>u.barn===b&&u.active).map(u=>u.name.split(' ')[0]).join(', ')}</b></div></div>`;}).join('')}</div><div class="chart-box sm" style="margin-top:12px"><canvas id="ch-barn"></canvas></div></div>`;}
 function barnCondCard(){const today=DB.barnCond.filter(c=>dayOf(c.date)===calc.day());return `<div class="card"><div class="card-h"><h3>Kondisi Kandang Hari Ini</h3><span class="sub">Input anak kandang</span></div>${today.length?`<div class="tbl-wrap"><table><thead><tr><th>Kandang</th><th>Suhu</th><th>Kelembapan</th><th>Sekam</th><th>Air</th><th>Catatan</th><th>User</th></tr></thead><tbody>${today.map(c=>`<tr><td><b>${barnName(c.barn)}</b></td><td class="num">${c.temp}°C</td><td class="num">${c.hum}%</td><td>${c.litter==='Kering'?badge('ok',c.litter):badge('warn',c.litter)}</td><td>${badge('ok',c.water)}</td><td style="white-space:normal">${c.note||'—'}</td><td>${userName(c.user).split(' ')[0]}</td></tr>`).join('')}</tbody></table></div>`:emptyState('Belum ada input hari ini','Anak kandang belum mengisi kondisi kandang.')}</div>`;}
 
+/* Tab Rotasi: semua batch yang sedang berjalan dalam satu layar.
+   Ini layar harian untuk pola panen bergilir — kandang mana panen hari ini,
+   kandang mana sudah waktunya diisi lagi. */
+function tabRotasi(){
+  const b=calc.batches();
+  if(!b.length)return `<div class="card"><div class="alert info">${ic('duck',16)}<div><b>Belum ada batch berjalan</b>Mulai batch pertama lewat tombol "Batch Baru" di kanan atas.</div></div></div>`;
+  const kosong=calc.kandangKosong();
+  const siapPanen=b.filter(x=>x.sisaHari<=0);
+  const segera=b.filter(x=>x.sisaHari>0&&x.sisaHari<=3);
+  const kpiRow=`<div class="grid g-3" style="margin-bottom:14px">
+    ${kpi('Batch berjalan',num(b.length),'batch',`${num(calc.populasiFarm())} ekor total`,'','duck')}
+    ${kpi('Panen berikutnya',siapPanen.length?num(siapPanen.length):(calc.batchBerikutnya()?calc.batchBerikutnya().sisaHari:'—'),siapPanen.length?'batch siap':'hari lagi',
+        siapPanen.length?siapPanen.map(x=>x.barnName).join(', '):(calc.batchBerikutnya()?`${calc.batchBerikutnya().code} di ${calc.batchBerikutnya().barnName}`:'—'),
+        siapPanen.length?'warn':'','scale')}
+    ${kpi('Kandang kosong',num(kosong.length),'kandang',kosong.length?kosong.map(x=>x.name).join(', ').slice(0,42):'semua terisi','','box')}</div>`;
+
+  const baris=x=>{
+    const aktif=DB.cycle&&DB.cycle.code===x.code;
+    const st=x.sisaHari<=0?badge('danger','SIAP PANEN'):x.sisaHari<=3?badge('gold',`${x.sisaHari} HARI LAGI`):badge('neutral',`${x.sisaHari} hari lagi`);
+    const mati=x.dodQty-x.population;
+    return `<tr${aktif?' style="background:rgba(168,208,141,.07)"':''}>
+      <td><b>${x.code}</b>${aktif?` ${badge('ok','DIBUKA')}`:''}</td>
+      <td>${x.barnNames||x.barnName}</td>
+      <td class="r num">${num(x.umur)}</td>
+      <td class="r num">${num(x.population)}</td>
+      <td class="r num">${num(x.dodQty)}</td>
+      <td class="r num">${mati>0?num(mati)+` (${num(mati/x.dodQty*100,1)}%)`:'—'}</td>
+      <td>${fmtDate(x.panen)}</td>
+      <td>${st}</td>
+      <td><button class="btn ghost sm" data-act="pilih-batch" data-v="${x.code}"${aktif?' disabled':''}>${aktif?'Dibuka':'Buka'}</button></td></tr>`;};
+
+  return kpiRow+
+  (siapPanen.length?`<div class="alert warn" style="margin-bottom:14px">${ic('alert',16)}<div><b>${siapPanen.length} batch sudah sampai umur panen</b>${siapPanen.map(x=>`${x.code} di ${x.barnName} (${num(x.population)} ekor, umur ${x.umur} hari)`).join(' · ')}. Tiap hari tertunda, pakan tetap jalan dan bobotnya lewat.</div></div>`:'')+
+  (segera.length?`<div class="alert info" style="margin-bottom:14px">${ic('clock',16)}<div><b>Panen dalam 3 hari</b>${segera.map(x=>`${x.code} di ${x.barnName} — ${fmtDate(x.panen)}`).join(' · ')}. Siapkan pembelinya.</div></div>`:'')+
+  `<div class="card"><div class="card-h"><h3>Batch yang sedang berjalan</h3><span class="sub">Urut dari yang paling tua. Klik "Buka" untuk melihat detail pakan, bobot, dan kematian batch itu.</span></div>
+   <div class="tbl-wrap"><table><thead><tr><th>Batch</th><th>Kandang</th><th class="r">Umur</th><th class="r">Populasi</th><th class="r">DOD awal</th><th class="r">Mati</th><th>Perkiraan panen</th><th>Status</th><th></th></tr></thead>
+   <tbody>${b.map(baris).join('')}</tbody></table></div>
+   ${kosong.length?`<div class="alert info" style="margin-top:14px">${ic('box',16)}<div><b>${kosong.length} kandang kosong siap diisi</b>${kosong.map(x=>x.name).join(', ')}. Pastikan sudah dicuci dan dikeringkan sebelum batch baru masuk.</div></div>`:''}</div>`;
+}
+
 function pgSiklus(){const c=DB.cycle;const d=calc.day();const s=calc.sum();const pop=calc.population();
  const role=state.user.role;
  // Tanpa siklus aktif halaman ini tetap dibuka, supaya hasil siklus yang sudah ditutup bisa dibaca
- const active=c?(state.tab||'aktif'):'riwayat';
+ const banyak=calc.batchAktif()>1;
+ const active=state.tab||(banyak?'rotasi':(c?'aktif':'riwayat'));
  const tgt=c?c.targetDays:45;
  const stages=[['DOD masuk',1,1],['Brooding',1,14],['Growing',15,Math.max(16,tgt-10)],['Finishing',Math.max(17,tgt-9),tgt-1],['Panen',tgt,tgt]];
  const mortIn=(a,b)=>DB.mortality.filter(m=>{const x=dayOf(m.date);return x>=a&&x<=b;}).reduce((t,m)=>t+m.qty,0);
  const harvests=DB.orders.filter(o=>o.source==='PANEN');
  const btns=[
    (c&&['OWNER','MANAGER'].includes(role)&&pop>0)?`<button class="btn primary" data-act="modal" data-m="harvest">${ic('plus',14)} Catat Panen</button>`:'',
-   (c&&role==='OWNER')?`<button class="btn" data-act="modal" data-m="cycle-close">Tutup Siklus</button>`:'',
-   can('masterData')?`<button class="btn ${c?'ghost':'primary'}" data-act="modal" data-m="cycle">${ic('plus',14)} Siklus Baru</button>`:'',
+   (['OWNER','MANAGER'].includes(role)&&calc.populasiFarm()>0)?`<button class="btn" data-act="modal" data-m="batch-move">Pindah Kandang</button>`:'',
+   (c&&role==='OWNER')?`<button class="btn" data-act="modal" data-m="cycle-close">Tutup Batch</button>`:'',
+   can('masterData')?`<button class="btn ${c?'ghost':'primary'}" data-act="modal" data-m="cycle">${ic('plus',14)} Batch Baru</button>`:'',
  ].filter(Boolean).join('');
  const sumRow=(k,v)=>`<span>${k}</span><b class="num">${v}</b>`;
 
  return pageHead('Siklus Ternak','Setiap siklus adalah unit akuntansi tersendiri: DOD, biaya, populasi, dan hasil panen terikat ke siklus.',btns)+
- `<div class="tabs">${c?`<button class="${active==='aktif'?'active':''}" data-act="tab" data-v="aktif">Siklus Aktif</button>`:''}<button class="${active==='riwayat'?'active':''}" data-act="tab" data-v="riwayat">Riwayat Siklus</button></div>`+
+ `<div class="tabs">${calc.batchAktif()?`<button class="${active==='rotasi'?'active':''}" data-act="tab" data-v="rotasi">Rotasi Kandang${calc.batchAktif()>1?` (${calc.batchAktif()})`:''}</button>`:''}${c?`<button class="${active==='aktif'?'active':''}" data-act="tab" data-v="aktif">Batch ${c.code}</button>`:''}<button class="${active==='riwayat'?'active':''}" data-act="tab" data-v="riwayat">Riwayat</button></div>`+
+ (active==='rotasi'?tabRotasi():'')+
  (!c?`<div class="alert info" style="margin-bottom:14px">${ic('duck',16)}<div><b>Tidak ada siklus yang sedang berjalan</b>${DB.prevCycles.length?'Hasil siklus yang sudah ditutup ada di tabel di bawah. ':''}${can('masterData')?'Mulai siklus baru lewat tombol di kanan atas.':'Hubungi Owner untuk memulai siklus baru.'}</div></div>`:'')+
- (active==='riwayat'?`<div class="card"><div class="tbl-wrap"><table><thead><tr><th>Siklus</th><th>DOD</th><th>Tanggal DOD</th><th class="r">Hari</th><th class="r">Panen</th><th class="r">Bobot</th><th class="r">Rata-rata</th><th class="r">FCR</th><th class="r">Mortalitas</th>${can('finance')?'<th class="r">Omzet</th><th class="r">Laba</th>':''}<th>Status</th></tr></thead><tbody>
+ (active==='rotasi'?'': active==='riwayat'?`<div class="card"><div class="tbl-wrap"><table><thead><tr><th>Siklus</th><th>DOD</th><th>Tanggal DOD</th><th class="r">Hari</th><th class="r">Panen</th><th class="r">Bobot</th><th class="r">Rata-rata</th><th class="r">FCR</th><th class="r">Mortalitas</th>${can('finance')?'<th class="r">Omzet</th><th class="r">Laba</th>':''}<th>Status</th></tr></thead><tbody>
   ${!c?'':`<tr><td><b>${c.code}</b><br><small style="color:var(--dim)">${c.breed}</small></td><td class="num">${num(c.dodQty)}</td><td>${fmtDate(c.dodDate)}</td><td class="r num">${d}</td><td class="r num">${s?num(s.harvestQty):0}</td><td class="r num">${s&&s.harvestKg?num(s.harvestKg,1)+' kg':'—'}</td><td class="r num">${s&&s.harvestAvgKg?num(s.harvestAvgKg,2)+' kg':'—'}</td><td class="r num">${s&&s.fcr!=null?num(s.fcr,3):'—'}</td><td class="r num">${s&&s.mortPct!=null?num(s.mortPct,2)+'%':'—'}</td>${can('finance')?`<td class="r num">${s?rp(s.revenue):'—'}</td><td class="r num">${s?rp(s.profit):'—'}</td>`:''}<td>${stBadge(c.stage==='HARVEST'?'PANEN':'AKTIF')}</td></tr>`}
   ${DB.prevCycles.map(p=>`<tr><td><b>${p.code}</b><br><small style="color:var(--dim)">${p.breed||'—'}</small></td><td class="num">${num(p.dodQty)}</td><td>${fmtDate(p.dodDate)}</td><td class="r num">${p.days??'—'}</td><td class="r num">${num(p.harvestQty||0)}</td><td class="r num">${p.harvestKg?num(p.harvestKg,1)+' kg':'—'}</td><td class="r num">${p.harvestAvgKg?num(p.harvestAvgKg,2)+' kg':'—'}</td><td class="r num">${p.fcr!=null?num(p.fcr,3):'—'}</td><td class="r num">${p.mortPct!=null?num(p.mortPct,2)+'%':'—'}</td>${can('finance')?`<td class="r num">${p.revenue!=null?rp(p.revenue):'—'}</td><td class="r num">${p.profit!=null?rp(p.profit):'—'}</td>`:''}<td>${stBadge(p.status)}${p.carriedOut?`<br><small style="color:var(--dim)">${num(p.carriedOut)} ekor dibawa keluar</small>`:''}</td></tr>`).join('')}
   ${!DB.prevCycles.length?`<tr><td colspan="${can('finance')?12:10}" style="color:var(--dim);text-align:center;padding:18px">Belum ada siklus yang ditutup. Riwayat akan muncul di sini setelah siklus pertama selesai.</td></tr>`:''}</tbody></table></div></div>`:
@@ -279,7 +322,9 @@ function pgPakan(){const fd=calc.feedDiff();const tab=state.tab||'riwayat';const
 
 function pgPertumbuhan(){const gap=calc.weightGap();const d=calc.day();
  return pageHead('Pertumbuhan','Bobot rata-rata dihitung dari sampel timbang (total berat ÷ jumlah sampel), dibandingkan dengan kurva target Peking.',state.user.role!=='ANAK_KANDANG'?`<button class="btn primary" data-act="modal" data-m="weigh">${ic('scale',14)} Input Timbang</button>`:'')+
- `<div class="grid g-kpi" style="margin-bottom:14px">${kpi('Bobot Rata-rata',calc.avgWeight()!=null?num(calc.avgWeight(),2):'—','kg',DB.weights.length?`Sampel terakhir ${fmtDate(DB.weights.slice(-1)[0].date)}`:'Belum ada timbangan','','scale')}${kpi('Target Hari ke-'+d,num(calc.target(d),2),'kg',`${gap>=0?'+':''}${num(gap,1)}% vs target`,gap<-3?'warn':'up','growth')}${kpi('Target Panen',num(MASTER.targetBobotMin,1)+'–'+num(MASTER.targetBobotMax,1),'kg',`H${DB.cycle.targetDays} · ${fmtDate(dateOfDay(DB.cycle.targetDays))}`,'','duck')}${kpi('ADG 7 hari terakhir',num((DB.weights.slice(-1)[0].avg-DB.weights.slice(-3)[0].avg)/(dayOf(DB.weights.slice(-1)[0].date)-dayOf(DB.weights.slice(-3)[0].date))*1000,0),'g/hari','Pertambahan bobot harian','','growth')}${kpi('FCR',calc.fcr()?num(calc.fcr().fcr,2):'—','','Transparan · lihat halaman Pakan','','feed')}</div>
+ `<div class="grid g-kpi" style="margin-bottom:14px">${kpi('Bobot Rata-rata',calc.avgWeight()!=null?num(calc.avgWeight(),2):'—','kg',DB.weights.length?`Sampel terakhir ${fmtDate(DB.weights.slice(-1)[0].date)}`:'Belum ada timbangan','','scale')}${kpi('Target Hari ke-'+d,num(calc.target(d),2),'kg',`${gap>=0?'+':''}${num(gap,1)}% vs target`,gap<-3?'warn':'up','growth')}${kpi('Target Panen',num(MASTER.targetBobotMin,1)+'–'+num(MASTER.targetBobotMax,1),'kg',`H${DB.cycle.targetDays} · ${fmtDate(dateOfDay(DB.cycle.targetDays))}`,'','duck')}${kpi('ADG 7 hari terakhir',(()=>{const w=DB.weights;if(w.length<2)return '\u2014';
+  const a=w[w.length-1],z=w[Math.max(0,w.length-3)];const hari=dayOf(a.date)-dayOf(z.date);
+  return hari>0?num((a.avg-z.avg)/hari*1000,0):'\u2014';})(),'g/hari',DB.weights.length<2?'Perlu minimal 2 timbangan':'Pertambahan bobot harian','','growth')}${kpi('FCR',calc.fcr()?num(calc.fcr().fcr,2):'—','','Transparan · lihat halaman Pakan','','feed')}</div>
  ${gap<-3?`<div class="alert warn" style="margin-bottom:14px">${ic('alert',18)}<div><b>Bobot tertinggal ${num(Math.abs(gap))}% dari kurva target</b>Periksa kualitas pakan, kepadatan kandang, dan suhu. Rekomendasi: timbang ulang sampel 30 ekor per kandang besok pagi.</div></div>`:''}
  <div class="grid g-2" style="margin-bottom:14px">${chartCard('Aktual vs Target','ch-weight','','','kg · seluruh siklus')}${chartCard('Perbandingan Kandang','ch-barn','','','bobot rata-rata terakhir')}</div>
  <div class="card"><div class="card-h"><h3>Riwayat Timbang</h3></div><div class="tbl-wrap"><table><thead><tr><th>Tanggal</th><th>Hari</th><th>Kandang</th><th class="r">Sampel</th><th class="r">Total berat</th><th class="r">Rata-rata</th><th class="r">Target</th><th>Foto timbangan</th><th>User</th><th>Status</th><th></th></tr></thead><tbody>${DB.weights.slice().reverse().map(w=>{const dd=dayOf(w.date);const t=calc.target(dd);return `<tr><td>${fmtDate(w.date)}</td><td class="num">H${dd}</td><td>${barnName(w.barn)}</td><td class="r num">${w.n} ekor</td><td class="r num">${num(w.total,1)} kg</td><td class="r num"><b>${num(w.avg,2)} kg</b></td><td class="r num" style="color:${w.avg<t*0.97?'#F2C46B':'var(--soft)'}">${num(t,2)} kg</td><td>${photoChip(w.photo)}</td><td>${userName(w.user)}</td><td>${w.locked?badge('neutral','TERKUNCI'):stBadge('RECORDED')}</td><td><button class="btn ghost sm" data-act="modal" data-m="correction" data-type="WEIGHT" data-id="${w.id}">Ajukan koreksi</button></td></tr>`;}).join('')}</tbody></table></div></div>

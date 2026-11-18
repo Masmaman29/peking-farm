@@ -55,15 +55,23 @@ function siteExitApp(){Object.assign(calc,calcOrig);delete calc.stockStatus;calc
 const STOCK_STATUS_ORIG=calc.stockStatus;
 
 function cycleCalc(){const f=document.getElementById('c-form');if(!f)return;
- const tot=[...f.querySelectorAll('input[name^=barn_]')].reduce((a,i)=>a+(+i.value||0),0);
- const pr=+f.querySelector('[name=price]').value||0;
- const t=document.getElementById('c-total'),c=document.getElementById('c-cost');
- if(t)t.textContent=num(tot)+' ekor';if(c)c.textContent=rp(tot*pr);}
+ const qty=+(f.qty?f.qty.value:0)||0, pr=+(f.price?f.price.value:0)||0, hari=+(f.days?f.days.value:45)||45;
+ const c=document.getElementById('c-cost'); if(c)c.textContent=qty&&pr?rp(qty*pr):'\u2014';
+ const pn=document.getElementById('c-panen');
+ if(pn){const d=f.date&&f.date.value?new Date(f.date.value):null;
+   pn.textContent=d?fmtLong(new Date(d.getTime()+(hari-1)*86400000)):'\u2014';}}
+function moveCalc(){}
+/* Pindah layar ke batch lain: muat ulang data khusus batch itu. */
+async function gantiBatch(code){
+  if(!code||code===state.batch)return;
+  state.batch=code;state.loading=true;render();
+  try{await loadDB(code);}catch(e){toast(e.message,'err');}
+  state.loading=false;render();}
 /* ---------------- EVENT: CLICK ---------------- */
 document.addEventListener('click',e=>{
  const el=e.target.closest('[data-act]');if(!el)return;const a=el.dataset.act;const d=el.dataset;
  if(a==='modal-close-bg'||a==='ai-close-bg'){if(e.target===el){if(a==='ai-close-bg')state.aiOpen=false;else state.modal=null;renderLayer();}return;}
- if(['search-input','audit-q','audit-user','audit-action','repbarn','repday','order-product','site-product','order-calc','site-calc','calc-avg','photo','order-customer','cycle-calc','prod-src','harvest-calc','harvest-cust'].includes(a))return;
+ if(['search-input','audit-q','audit-user','audit-action','repbarn','repday','order-product','site-product','order-calc','site-calc','calc-avg','photo','order-customer','cycle-calc','prod-src','harvest-calc','harvest-cust','move-calc'].includes(a))return;
  switch(a){
   case 'go':go(d.page);break;
   case 'side-open':state.sideOpen=true;render();break;
@@ -73,6 +81,7 @@ document.addEventListener('click',e=>{
   case 'site':siteBoot();break;
   case 'site-exit':siteExit();break;
   case 'tab':state.tab=d.v;render();break;
+  case 'pilih-batch':gantiBatch(d.v);break;
   case 'range':state.range=d.v;render();break;
   case 'barn':state.barn=d.v;render();break;
   case 'ofilter':state.filters.os=d.v;render();break;
@@ -187,10 +196,15 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
   case 'submit-health':{const r=await act('HEALTH',{barn:v.barn,type:v.type,item:v.item,dose:v.dose,note:v.note});if(r){closeModal();toast('Tindakan kesehatan dicatat.');render();}break;}
   case 'submit-user':{const r=await act('USER_CREATE',{name:v.name,role:v.role,barn:v.barn||undefined,phone:v.phone,email:v.email||undefined,password:v.password});if(r){closeModal();toast(`Pengguna ${v.name} dibuat. Sampaikan password awalnya langsung ke yang bersangkutan.`);render();}break;}
   case 'submit-user-delete':{const r=await act('USER_DELETE',{id:f.dataset.id});if(r){closeModal();toast(r.removed?`${r.name} dihapus permanen.`:`${r.name} diarsipkan \u2014 riwayatnya tetap tersimpan.`);render();}break;}
-  case 'submit-cycle':{const barns=Object.keys(v).filter(k=>k.startsWith('barn_')).map(k=>({code:k.slice(5),qty:+v[k]||0})).filter(x=>x.qty>0);
-    if(!barns.length){toast('Isi jumlah DOD minimal di satu kandang.','err');return;}
-    const r=await act('CYCLE_CREATE',{dodDate:v.date,dodPrice:+v.price,breed:v.breed,targetDays:+v.days,barns});
-    if(r){closeModal();toast(`Siklus ${r.code} dimulai.`);render();}break;}
+  case 'submit-cycle':{const qty=+v.qty||0;
+    if(!(qty>0)){toast('Isi jumlah DOD yang masuk.','err');return;}
+    if(!v.barn){toast('Pilih kandangnya.','err');return;}
+    const r=await act('CYCLE_CREATE',{dodDate:v.date,dodPrice:+v.price,breed:v.breed,targetDays:+v.days,barn:v.barn,qty});
+    if(r){closeModal();state.batch=r.code;toast(`Batch ${r.code} dimulai — ${num(qty)} ekor di ${barnName(v.barn)}.`);await loadDB();render();}break;}
+  case 'submit-batch-move':{
+    const r=await act('BATCH_MOVE',{from:v.from,to:v.to,qty:v.qty?+v.qty:undefined,note:v.note||undefined});
+    if(r){closeModal();toast(`Batch ${r.code}: ${num(r.qty)} ekor pindah dari ${r.dari} ke ${r.ke}.`);await loadDB();render();}break;}
+
   case 'submit-kontak':{
     const r=await act('CONFIG_SAVE',{kontakWhatsapp:v.kontakWhatsapp||'',kontakJam:v.kontakJam||'',kontakAlamat:v.kontakAlamat||'',kontakEmail:v.kontakEmail||''});
     if(r){toast(r.changed?'Kontak website disimpan.':'Tidak ada yang berubah.');render();}break;}
