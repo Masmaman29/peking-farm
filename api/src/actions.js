@@ -27,6 +27,30 @@ async function activeCycle(c) {
   if (!r.rows.length) throw new ActionError('Tidak ada siklus aktif.');
   return r.rows[0];
 }
+
+/* Batch yang sedang mengisi SATU kandang.
+ * Ini inti dukungan banyak batch: input harian mengikuti kandangnya, bukan
+ * siklus yang paling baru dibuat. Tanpa ini, pakan untuk batch umur 20 hari
+ * akan tercatat di batch yang baru masuk kemarin. */
+async function cycleOfBarn(c, barnUuid, barnLabel) {
+  const r = await c.query(
+    `SELECT cy.* FROM cycle cy
+       JOIN v_population v ON v.cycle_id = cy.id AND v.barn_id = $1
+      WHERE cy.status='ACTIVE' AND v.population > 0
+      ORDER BY cy.dod_date LIMIT 1`, [barnUuid]);
+  if (!r.rows.length) {
+    const nm = barnLabel || (await c.query('SELECT name FROM barn WHERE id=$1', [barnUuid])).rows[0]?.name || 'itu';
+    throw new ActionError(`Tidak ada ternak di ${nm}. Mulai batch baru dulu di kandang itu, atau pilih kandang lain.`);
+  }
+  return r.rows[0];
+}
+
+/* Dipakai aksi tingkat farm (pembelian pakan, opname, penyesuaian stok):
+ * tidak terikat batch mana pun. */
+async function anyActiveCycle(c) {
+  const r = await c.query(`SELECT * FROM cycle WHERE status='ACTIVE' ORDER BY dod_date LIMIT 1`);
+  return r.rows[0] || null;
+}
 async function saveAttachment(c, file, entity_type, entity_id, kind, user) {
   if (!file) return null;
   const buf = await file.toBuffer();
@@ -57,7 +81,7 @@ export const ACTIONS = {
     need(user, ['OWNER', 'MANAGER', 'ANAK_KANDANG']);
     const v = z.object({ kg: z.number().positive().max(2000), barn: z.string(), feedType: z.string().optional() }).parse(p);
     await requirePhoto(c, file);
-    const cy = await activeCycle(c); const b = await barnId(c, v.barn, user);
+    const b = await barnId(c, v.barn, user); const cy = await cycleOfBarn(c, b, v.barn);
     const feed = (await c.query(`SELECT id FROM feed WHERE type=$1 LIMIT 1`, [v.feedType || 'GROWER'])).rows[0] || (await c.query('SELECT id FROM feed LIMIT 1')).rows[0];
     const r = await c.query(`INSERT INTO feed_transaction(cycle_id,barn_id,feed_id,type,qty_kg,occurred_at,created_by) VALUES ($1,$2,$3,'USAGE',$4,now(),$5) RETURNING id`, [cy.id, b, feed.id, -v.kg, user.id]);
     const photo = await saveAttachment(c, file, 'feed_transaction', r.rows[0].id, 'pakan', user);
@@ -68,7 +92,7 @@ export const ACTIONS = {
     need(user, ['OWNER', 'MANAGER', 'ANAK_KANDANG']);
     const v = z.object({ qty: z.number().int().positive().max(500), barn: z.string(), cause: z.string().min(1), note: z.string().optional() }).parse(p);
     await requirePhoto(c, file);
-    const cy = await activeCycle(c); const b = await barnId(c, v.barn, user);
+    const b = await barnId(c, v.barn, user); const cy = await cycleOfBarn(c, b, v.barn);
     const pop = (await c.query('SELECT population FROM v_population WHERE cycle_id=$1 AND barn_id=$2', [cy.id, b])).rows[0]?.population || 0;
     if (v.qty > pop) throw new ActionError(`Jumlah mati (${v.qty}) melebihi populasi kandang (${pop}).`);
     const r = await c.query(`INSERT INTO mortality(cycle_id,barn_id,qty,cause,note,occurred_at,created_by) VALUES ($1,$2,$3,$4,$5,now(),$6) RETURNING id`, [cy.id, b, v.qty, v.cause, v.note || null, user.id]);
@@ -82,7 +106,7 @@ export const ACTIONS = {
     need(user, ['OWNER', 'MANAGER', 'ANAK_KANDANG']);
     const v = z.object({ n: z.number().int().min(1).max(200), total: z.number().positive().max(1000), barn: z.string() }).parse(p);
     await requirePhoto(c, file);
-    const cy = await activeCycle(c); const b = await barnId(c, v.barn, user);
+    const b = await barnId(c, v.barn, user); const cy = await cycleOfBarn(c, b, v.barn);
     const r = await c.query(`INSERT INTO weight_record(cycle_id,barn_id,sample_n,total_kg,occurred_at,created_by) VALUES ($1,$2,$3,$4,now(),$5) RETURNING id, avg_kg`, [cy.id, b, v.n, v.total, user.id]);
     const photo = await saveAttachment(c, file, 'weight_record', r.rows[0].id, 'timbangan', user);
     await audit(c, user.id, 'CREATE', 'weight_record', `Timbang ${v.n} ekor, total ${v.total} kg, rata-rata ${(+r.rows[0].avg_kg).toFixed(2)} kg — Kandang ${v.barn}`, r.rows[0].id);
@@ -91,7 +115,7 @@ export const ACTIONS = {
   async BARN_CONDITION(c, p, user, file) {
     need(user, ['OWNER', 'MANAGER', 'ANAK_KANDANG']);
     const v = z.object({ barn: z.string(), temp: z.number(), hum: z.number(), litter: z.enum(['Kering', 'Agak lembab', 'Basah']), water: z.enum(['Lancar', 'Tersendat', 'Kosong']), behavior: z.enum(['Aktif', 'Lesu', 'Menggerombol']).optional(), note: z.string().optional() }).parse(p);
-    const cy = await activeCycle(c); const b = await barnId(c, v.barn, user);
+    const b = await barnId(c, v.barn, user); const cy = await cycleOfBarn(c, b, v.barn);
     const r = await c.query(`INSERT INTO barn_condition(cycle_id,barn_id,temp_c,humidity_pct,litter,water,behavior,note,occurred_at,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,now(),$9) RETURNING id`, [cy.id, b, v.temp, v.hum, v.litter, v.water, v.behavior || 'Aktif', v.note || null, user.id]);
     await saveAttachment(c, file, 'barn_condition', r.rows[0].id, 'kandang', user);
     await audit(c, user.id, 'CREATE', 'barn_condition', `Kondisi kandang ${v.barn}: ${v.temp}°C, ${v.hum}%, sekam ${v.litter}, air ${v.water}`, r.rows[0].id);
@@ -100,7 +124,8 @@ export const ACTIONS = {
   async HEALTH(c, p, user, file) {
     need(user, ['OWNER', 'MANAGER', 'ANAK_KANDANG']);
     const v = z.object({ barn: z.string(), type: z.enum(['Vaksinasi', 'Vitamin', 'Pengobatan', 'Observasi']), item: z.string().min(1), dose: z.string().optional(), note: z.string().optional() }).parse(p);
-    const cy = await activeCycle(c); const b = v.barn === 'ALL' ? null : await barnId(c, v.barn, user);
+    if (v.barn === 'ALL') throw new ActionError('Pilih kandangnya. Tindakan kesehatan dicatat per kandang karena tiap kandang beda umur dan beda batch.');
+    const b = await barnId(c, v.barn, user); const cy = await cycleOfBarn(c, b, v.barn);
     if (v.barn === 'ALL' && user.role === 'ANAK_KANDANG') deny();
     const t = { Vaksinasi: 'VACCINE', Vitamin: 'VITAMIN', Pengobatan: 'TREATMENT', Observasi: 'OBSERVATION' }[v.type];
     const r = await c.query(`INSERT INTO health_record(cycle_id,barn_id,type,item,dose,note,occurred_at,created_by) VALUES ($1,$2,$3,$4,$5,$6,now(),$7) RETURNING id`, [cy.id, b, t, v.item, v.dose || null, v.note || null, user.id]);
@@ -204,7 +229,8 @@ export const ACTIONS = {
     need(user, ['OWNER', 'ADMIN']);
     const v = z.object({ qty: z.number().positive(), price: z.number().positive(), vendor: z.string().min(1), ref: z.string().min(1), feedType: z.string().optional() }).parse(p);
     await requirePhoto(c, file);
-    const cfg = await config(c); const cy = await activeCycle(c);
+    const cfg = await config(c);
+    const cy = { id: null };   // pembelian pakan masuk stok farm, bukan batch tertentu
     const feed = (await c.query(`SELECT id FROM feed WHERE type=$1 LIMIT 1`, [v.feedType || 'GROWER'])).rows[0] || (await c.query('SELECT id FROM feed LIMIT 1')).rows[0];
     const big = v.qty * v.price > +cfg.ambang_approval_rp;
     const r = await c.query(`INSERT INTO feed_transaction(cycle_id,feed_id,type,qty_kg,price_per_kg,vendor,ref_no,occurred_at,status,locked,created_by) VALUES ($1,$2,'PURCHASE',$3,$4,$5,$6,now(),$7,$8,$9) RETURNING id`,
@@ -217,10 +243,14 @@ export const ACTIONS = {
   async EXPENSE(c, p, user, file) {
     need(user, ['OWNER', 'ADMIN']);
     const catMap = { Vitamin: 'VITAMIN', Obat: 'OBAT', Listrik: 'LISTRIK', Gas: 'GAS', Sekam: 'SEKAM', 'Tenaga kerja': 'TENAGA_KERJA', Transport: 'TRANSPORT', Peralatan: 'PERALATAN', Maintenance: 'MAINTENANCE', 'Biaya lain': 'LAIN', DOD: 'DOD', Pakan: 'PAKAN' };
-    const v = z.object({ cat: z.string(), amount: z.number().positive(), vendor: z.string().min(1), ref: z.string().min(1) }).parse(p);
+    const v = z.object({ cat: z.string(), amount: z.number().positive(), vendor: z.string().min(1), ref: z.string().min(1), barn: z.string().optional() }).parse(p);
     if (!catMap[v.cat]) throw new ActionError('Kategori tidak dikenal.');
     await requirePhoto(c, file);
-    const cfg = await config(c); const cy = await activeCycle(c); const big = v.amount > +cfg.ambang_approval_rp;
+    const cfg = await config(c); const big = v.amount > +cfg.ambang_approval_rp;
+    // Biaya boleh ditempelkan ke satu batch (lewat kandangnya). Tanpa itu jadi
+    // biaya umum farm - listrik, gaji, sewa - yang memang bukan milik satu batch.
+    let cy = { id: null };
+    if (v.barn) { const bb = await barnId(c, v.barn, user); cy = await cycleOfBarn(c, bb, v.barn); }
     const r = await c.query(`INSERT INTO expense(cycle_id,category,amount,vendor,ref_no,occurred_at,status,created_by) VALUES ($1,$2,$3,$4,$5,CURRENT_DATE,$6,$7) RETURNING id`, [cy.id, catMap[v.cat], v.amount, v.vendor, v.ref, big ? 'PENDING' : 'APPROVED', user.id]);
     if (big) await approvalRow(c, 'expense', r.rows[0].id, user, 'OWNER');
     await saveAttachment(c, file, 'expense', r.rows[0].id, 'nota', user);
@@ -247,7 +277,8 @@ export const ACTIONS = {
   async STOCK_ADJUST(c, p, user) {
     need(user, ['OWNER', 'MANAGER']);
     const v = z.object({ qty: z.number(), reason: z.string().min(3) }).parse(p);
-    const cy = await activeCycle(c); const feed = (await c.query('SELECT id FROM feed LIMIT 1')).rows[0];
+    const cy = { id: null };   // stok pakan dihitung tingkat farm
+    const feed = (await c.query('SELECT id FROM feed LIMIT 1')).rows[0];
     const r = await c.query(`INSERT INTO feed_transaction(cycle_id,feed_id,type,qty_kg,reason,occurred_at,status,locked,created_by) VALUES ($1,$2,'ADJUSTMENT',$3,$4,now(),'APPROVED',true,$5) RETURNING id`, [cy.id, feed.id, v.qty, v.reason, user.id]);
     await c.query(`UPDATE anomaly SET status='VERIFIED', verified_by=$1, verified_at=now(), verify_note=$2 WHERE dedupe_key='AN-FEED-DIFF' AND status='OPEN'`, [user.id, v.reason]);
     await audit(c, user.id, 'STOCK_ADJUSTMENT', 'feed_stock', `Penyesuaian stok pakan ${v.qty} kg — ${v.reason}`, r.rows[0].id);
@@ -271,7 +302,9 @@ export const ACTIONS = {
     const stock = prod.stock_source === 'POPULATION' ? Number((await c.query(`SELECT COALESCE(SUM(population),0) s FROM v_population_cycle vp JOIN cycle cy ON cy.id=vp.cycle_id WHERE cy.status='ACTIVE'`)).rows[0].s) : Number((await c.query('SELECT qty FROM v_inventory_stock WHERE inventory_id=$1', [prod.inventory_id])).rows[0]?.qty || 0);
     if (stock < v.qty) throw new ActionError(`Stok ${prod.name} tidak cukup (${stock} ekor).`);
     const code = 'ORD-' + String((await c.query("SELECT nextval('order_code_seq') n")).rows[0].n).padStart(4, '0');
-    const cy = prod.stock_source === 'POPULATION' ? await activeCycle(c) : null;
+    // Jual dari populasi: ambil batch tertua yang masih berisi (paling dekat panen)
+    const cy = prod.stock_source === 'POPULATION' ? await anyActiveCycle(c) : null;
+    if (prod.stock_source === 'POPULATION' && !cy) throw new ActionError('Belum ada batch berjalan, jadi belum ada ternak untuk dijual.');
     const barn = cy ? (await c.query(`SELECT barn_id FROM v_population WHERE cycle_id=$1 ORDER BY population DESC LIMIT 1`, [cy.id])).rows[0].barn_id : null;
     const o = await c.query(`INSERT INTO "order"(code,customer_id,source,status,payment_status,pickup_date,total_est,created_by) VALUES ($1,$2,'ADMIN',$3,$4,$5,$6,$7) RETURNING id`,
       [code, cust, big ? 'PENDING_APPROVAL' : 'CONFIRMED', v.pay === 'PAID' ? 'PAID' : v.pay === 'DP' ? 'DP' : 'UNPAID', v.pickup || null, est, user.id]);
@@ -305,8 +338,14 @@ export const ACTIONS = {
       dodPrice: z.number().nonnegative(),
       breed: z.string().trim().min(2).optional(),
       targetDays: z.number().int().positive().max(200).optional(),
-      barns: z.array(z.object({ code: z.string().min(1), qty: z.number().int().positive() })).min(1, 'Minimal satu kandang diisi.')
+      // Bentuk sederhana untuk pola batch bergilir: satu batch, satu kandang.
+      barn: z.string().min(1).optional(),
+      qty: z.number().int().positive().optional(),
+      // Bentuk lama: satu siklus dibagi ke beberapa kandang. Tetap didukung.
+      barns: z.array(z.object({ code: z.string().min(1), qty: z.number().int().positive() })).optional()
     }).parse(p);
+    if (v.barn && v.qty) v.barns = [{ code: v.barn, qty: v.qty }];
+    if (!v.barns || !v.barns.length) throw new ActionError('Isi jumlah DOD dan pilih kandangnya.');
 
     const farm = (await c.query('SELECT id FROM farm LIMIT 1')).rows[0];
     if (!farm) throw new ActionError('Data farm belum ada.');
@@ -339,6 +378,48 @@ export const ACTIONS = {
     return { id: cy, code };
   },
 
+  /* Pindah batch antar kandang — brooding (hari 1-10) ke pembesaran (hari 11+).
+   * Populasi tidak berubah, hanya tempatnya. Batch-nya tetap sama, jadi umur,
+   * pakan, dan riwayatnya ikut pindah tanpa terputus. */
+  async BATCH_MOVE(c, p, user) {
+    need(user, ['OWNER', 'MANAGER']);
+    const v = z.object({
+      from: z.string().min(1),
+      to: z.string().min(1),
+      qty: z.number().int().positive().optional(),
+      note: z.string().trim().optional()
+    }).parse(p);
+    if (v.from.toUpperCase() === v.to.toUpperCase()) throw new ActionError('Kandang asal dan tujuan sama.');
+
+    const from = await barnId(c, v.from, user);
+    const to = await barnId(c, v.to, user);
+    const cy = await cycleOfBarn(c, from, v.from);
+
+    const ada = (await c.query('SELECT population FROM v_population WHERE cycle_id=$1 AND barn_id=$2', [cy.id, from])).rows[0]?.population || 0;
+    const qty = v.qty || Number(ada);
+    if (qty > ada) throw new ActionError(`Hanya ada ${ada} ekor di kandang asal, tidak bisa memindahkan ${qty}.`);
+
+    const bt = (await c.query('SELECT name, capacity FROM barn WHERE id=$1', [to])).rows[0];
+    const isiTujuan = (await c.query(`SELECT COALESCE(SUM(v.population),0) n FROM v_population v
+      JOIN cycle cy ON cy.id=v.cycle_id AND cy.status='ACTIVE' WHERE v.barn_id=$1`, [to])).rows[0].n;
+    const lain = (await c.query(`SELECT cy.code FROM v_population v
+      JOIN cycle cy ON cy.id=v.cycle_id AND cy.status='ACTIVE'
+      WHERE v.barn_id=$1 AND v.population > 0 AND cy.id <> $2 LIMIT 1`, [to, cy.id])).rows[0];
+    if (lain) throw new ActionError(`${bt.name} sedang dipakai batch ${lain.code}. Satu kandang hanya untuk satu batch — umur yang tercampur bikin penyakit menular dari yang tua ke yang muda.`);
+    if (Number(isiTujuan) + qty > bt.capacity) throw new ActionError(`${bt.name} hanya muat ${bt.capacity} ekor, sudah ada ${isiTujuan}, mau ditambah ${qty}.`);
+
+    await c.query(`INSERT INTO population_tx(cycle_id,barn_id,type,qty,ref_type,ref_id,occurred_at,created_by)
+      VALUES ($1,$2,'TRANSFER_OUT',$3,'transfer',$1,now(),$4)`, [cy.id, from, -qty, user.id]);
+    await c.query(`INSERT INTO population_tx(cycle_id,barn_id,type,qty,ref_type,ref_id,occurred_at,created_by)
+      VALUES ($1,$2,'TRANSFER_IN',$3,'transfer',$1,now(),$4)`, [cy.id, to, qty, user.id]);
+
+    const bf = (await c.query('SELECT name FROM barn WHERE id=$1', [from])).rows[0];
+    const sisa = (await c.query('SELECT COALESCE(population,0) n FROM v_population WHERE cycle_id=$1 AND barn_id=$2', [cy.id, from])).rows[0]?.n || 0;
+    await audit(c, user.id, 'UPDATE', 'cycle',
+      `Batch ${cy.code} dipindah ${qty} ekor dari ${bf.name} ke ${bt.name}${Number(sisa) > 0 ? ` — sisa ${sisa} ekor di ${bf.name}` : ''}${v.note ? ` — ${v.note}` : ''}`, cy.id);
+    return { code: cy.code, qty, dari: bf.name, ke: bt.name, sisa: Number(sisa) };
+  },
+
   /* ---------------- PANEN & TUTUP SIKLUS ---------------- */
   async HARVEST(c, p, user, file) {
     need(user, ['OWNER', 'MANAGER']);
@@ -355,8 +436,8 @@ export const ACTIONS = {
     }).parse(p);
     await requirePhoto(c, file);
 
-    const cy = await activeCycle(c);
     const b = await barnId(c, v.barn, user);
+    const cy = await cycleOfBarn(c, b, v.barn);
     const pop = (await c.query('SELECT population FROM v_population WHERE cycle_id=$1 AND barn_id=$2', [cy.id, b])).rows[0]?.population || 0;
     if (v.qty > pop) throw new ActionError(`Jumlah panen (${v.qty} ekor) melebihi populasi kandang ${v.barn} (${pop} ekor).`);
 
@@ -408,8 +489,19 @@ export const ACTIONS = {
 
   async CYCLE_CLOSE(c, p, user) {
     need(user, ['OWNER']);
-    const v = z.object({ note: z.string().trim().optional(), carryRemaining: z.boolean().optional() }).parse(p);
-    const cy = await activeCycle(c);
+    const v = z.object({ code: z.string().trim().optional(), barn: z.string().trim().optional(), note: z.string().trim().optional(), carryRemaining: z.boolean().optional() }).parse(p);
+    // Dengan banyak batch jalan bersamaan, harus jelas batch MANA yang ditutup
+    let cy;
+    if (v.code) {
+      cy = (await c.query(`SELECT * FROM cycle WHERE code=$1 AND status='ACTIVE'`, [v.code])).rows[0];
+      if (!cy) throw new ActionError(`Batch ${v.code} tidak ditemukan atau sudah ditutup.`);
+    } else if (v.barn) {
+      const bb = await barnId(c, v.barn, user); cy = await cycleOfBarn(c, bb, v.barn);
+    } else {
+      const all = (await c.query(`SELECT code FROM cycle WHERE status='ACTIVE' ORDER BY dod_date`)).rows;
+      if (all.length > 1) throw new ActionError(`Ada ${all.length} batch berjalan (${all.map(x => x.code).join(', ')}). Sebutkan batch mana yang ditutup.`);
+      cy = await activeCycle(c);
+    }
 
     const left = (await c.query(`SELECT barn_id, population FROM v_population WHERE cycle_id=$1 AND population > 0`, [cy.id])).rows;
     const total = left.reduce((a, r) => a + Number(r.population), 0);
