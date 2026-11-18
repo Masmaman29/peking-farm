@@ -50,7 +50,7 @@ function jepretFoto(){
  const id=k.id;
  cv.toBlob(b=>{
   if(!b){toast('Gagal menyimpan foto, coba lagi.','err');return;}
-  simpanFoto(id,b,'kamera');tutupKamera();render();
+  simpanFoto(id,b,'kamera');tutupKamera();renderJagaIsian();
  },'image/jpeg',0.82);}
 function hapusFoto(){Object.keys(state.foto||{}).forEach(k=>{const f=state.foto[k];if(f&&f.url)URL.revokeObjectURL(f.url);});state.foto={};}
 const needPhoto=form=>{if(MASTER.fotoWajib&&!fileOf(form)){toast('Foto bukti wajib dilampirkan.','err');const u=form.querySelector('.upload');if(u)u.style.borderColor='var(--danger)';return false;}return true;};
@@ -129,7 +129,13 @@ document.addEventListener('click',e=>{
   case 'modal':openModal(d.m,{type:d.type,id:d.id,product:d.product,kind:d.kind});break;
   case 'modal-close':closeModal();break;
   case 'kamera-buka':bukaKamera(d.id);break;
-  case 'kamera-tutup':tutupKamera();render();break;
+  case 'buka-kandang':(async()=>{state.loading=true;render();try{await loadDB(d.code);state.tab='aktif';}finally{state.loading=false;render();}})();break;
+  case 'tb-tambah':{const tb=document.getElementById('tb-body');if(tb){tb.insertAdjacentHTML('beforeend',barisTimbang());hitungPanen();const ins=tb.querySelectorAll('[name=tb_ekor]');ins[ins.length-1].focus();}break;}
+  case 'tb-hapus':{const tr=el.closest('tr');const tb=document.getElementById('tb-body');if(tr&&tb&&tb.children.length>1){tr.remove();hitungPanen();}break;}
+  case 'inv-unduh':unduhInvoice(d.id);break;
+  case 'inv-cetak':cetakInvoice(d.id);break;
+  case 'inv-bagi':bagikanInvoice(d.id);break;
+  case 'kamera-tutup':tutupKamera();renderJagaIsian();break;
   case 'kamera-jepret':jepretFoto();break;
   case 'ai-open':state.aiOpen=true;renderLayer();break;
   case 'ai-close':state.aiOpen=false;renderLayer();break;
@@ -150,7 +156,7 @@ document.addEventListener('click',e=>{
  }
 });
 document.addEventListener('change',e=>{const el=e.target.closest('[data-act]');if(!el)return;const a=el.dataset.act;
- if(a==='photo'){const fl=el.files&&el.files[0];const id=(el.id||'').replace(/^file-/,'');if(fl&&id){simpanFoto(id,fl,'galeri');tutupKamera();render();}return;}
+ if(a==='photo'){const fl=el.files&&el.files[0];const id=(el.id||'').replace(/^file-/,'');if(fl&&id){simpanFoto(id,fl,'galeri');tutupKamera();renderJagaIsian();}return;}
  if(a==='audit-user'){state.filters.au=el.value;render();}if(a==='audit-action'){state.filters.aa=el.value;render();}
  if(a==='repbarn'){state.filters.barn=el.value;render();}if(a==='repday'){state.filters.day=+el.value;render();}
  if(a==='order-product'){const p=DB.products.find(x=>x.id===el.value);document.getElementById('o-p').value=p.price||0;orderCalc();}
@@ -239,6 +245,12 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
    const jt=bacaJatah(v);const lama=DB.cycle.jatah||MASTER.pakemPakan||[];
    const r=await act('CYCLE_TARGET',{code:DB.cycle.code,targetDays:hari,targetBobotMin:bobot,bobotDodKg:(+v.dodGram||0)/1000,...(jt&&jt.some((x,i)=>x!==lama[i])?{jatah:jt}:{})});
    if(r){closeModal();toast(`Target batch ${r.code} diubah: ${num(bobot,2)} kg di hari ke-${hari}.`);render();}break;}
+  case 'submit-panen':{const tb=bacaTimbangan();if(!tb.length){toast('Isi minimal satu timbangan: jumlah ekor dan beratnya.','err');return;}
+   if(tb.some(t=>!(t.ekor>0)||!(t.kg>0))){toast('Ada baris timbangan yang belum lengkap. Isi ekor dan berat, atau hapus barisnya.','err');return;}
+   if(!(+v.harga>0)){toast('Isi harga per kg.','err');return;}if(!needPhoto(f))return;
+   const r=await act('HARVEST',{barn:v.barn,timbangan:tb,pricePerKg:+v.harga,customer:'NEW',customerName:v.nama,customerPhone:v.hp||undefined,pay:v.pay},file);
+   if(r){state.modal={m:'invoice',opts:{id:r.code}};toast(`Panen dicatat: ${rp(r.total)}. Invoice dibuat.`);render();}break;}
+  case 'submit-cond':{const r=await act('BARN_CONDITION',{barn:v.barn,temp:+v.temp,hum:+v.hum,litter:v.litter,water:v.water,behavior:v.behavior,note:v.note||undefined});if(r){closeModal();toast('Kondisi kandang dicatat.');render();}break;}
   case 'submit-feed-use':{if(!v.jenis){toast('Pilih jenis pakannya.','err');return;}if(!needPhoto(f))return;const r=await act('FEED_USAGE',{kg:+v.kg,barn:v.barn,feedType:v.jenis,sesi:v.sesi},file);if(r){closeModal();toast(`Pakan ${v.sesi==='PAGI'?'pagi':'sore'} ${num(+v.kg,1)} kg dicatat keluar ke ${barnName(v.barn)}.`);render();}break;}
   case 'submit-mort':{if(!needPhoto(f))return;const r=await act('MORTALITY',{qty:+v.qty,barn:v.barn,cause:v.cause},file);if(r){closeModal();toast('Kematian dicatat. Populasi diperbarui lewat transaksi.');render();}break;}
   case 'submit-weigh':{if(!needPhoto(f))return;const r=await act('WEIGHT',{n:+v.n,total:+v.total,barn:v.barn},file);if(r){closeModal();toast(`Timbang dicatat. Rata-rata ${num(r.avg,2)} kg.`);render();}break;}
@@ -348,3 +360,82 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
  const lepas=()=>{if(y0===null)return;const cukup=dy*0.55>=BATAS;y0=null;dy=0;if(cukup)segarkan();else tampil(0,'');};
  document.addEventListener('touchend',lepas,{passive:true});document.addEventListener('touchcancel',()=>{y0=null;dy=0;if(!jalan)tampil(0,'');},{passive:true});
 })();
+
+
+/* ---------------- ISIAN FORM BERTAHAN SAAT LAYAR DIGAMBAR ULANG ----------------
+   Mengambil foto menggambar ulang layar. Tanpa ini, angka yang sudah diketik
+   (termasuk baris timbangan panen) hilang setiap kali foto diambil. */
+function simpanIsian(){const out=[];document.querySelectorAll('#root form,#layer form').forEach(f=>{const kunci=f.id||f.dataset.act;if(!kunci)return;const nilai={};
+  f.querySelectorAll('input,select,textarea').forEach(el=>{if(!el.name||el.type==='file')return;(nilai[el.name]=nilai[el.name]||[]).push(el.type==='checkbox'||el.type==='radio'?el.checked:el.value);});
+  out.push({kunci,nilai,baris:f.querySelectorAll('#tb-body tr').length});});return out;}
+function pulihkanIsian(snap){(snap||[]).forEach(s=>{const f=document.getElementById(s.kunci)||document.querySelector(`form[data-act="${s.kunci}"]`);if(!f)return;
+  const tb=f.querySelector('#tb-body');if(tb&&s.baris){while(tb.children.length<s.baris)tb.insertAdjacentHTML('beforeend',barisTimbang());}
+  const hitung={};f.querySelectorAll('input,select,textarea').forEach(el=>{if(!el.name||el.type==='file'||!(el.name in s.nilai))return;const i=hitung[el.name]=(hitung[el.name]||0);hitung[el.name]++;const v=s.nilai[el.name][i];if(v===undefined)return;
+   if(el.type==='checkbox'||el.type==='radio')el.checked=v;else el.value=v;});});
+ if(document.getElementById('tb-body'))hitungPanen();}
+function renderJagaIsian(){const snap=simpanIsian();render();pulihkanIsian(snap);}
+
+/* ---------------- TIMBANGAN PANEN ---------------- */
+function bacaTimbangan(){const tb=document.getElementById('tb-body');if(!tb)return [];return [...tb.querySelectorAll('tr')].map(tr=>({ekor:+(tr.querySelector('[name=tb_ekor]').value||0),kg:+(tr.querySelector('[name=tb_kg]').value||0)})).filter(t=>t.ekor||t.kg);}
+function hitungPanen(){const tb=document.getElementById('tb-body');if(!tb)return;let ekor=0,kg=0;
+ [...tb.querySelectorAll('tr')].forEach((tr,i)=>{tr.querySelector('.tb-no').textContent=i+1;const e=+(tr.querySelector('[name=tb_ekor]').value||0),k=+(tr.querySelector('[name=tb_kg]').value||0);tr.querySelector('.tb-rata').textContent=e>0&&k>0?num(k/e,2)+' kg/ekor':'—';ekor+=e;kg+=k;});
+ const set=(id,t)=>{const el=document.getElementById(id);if(el)el.textContent=t;};
+ set('tb-ekor',num(ekor)+' ekor');set('tb-kg',num(kg,1)+' kg');set('tb-avg',ekor>0&&kg>0?num(kg/ekor,2)+' kg':'—');
+ const h=+((document.querySelector('#pn-form [name=harga]')||{}).value||0);set('tb-uang',h>0&&kg>0?rp(kg*h):'—');}
+document.addEventListener('input',e=>{if(e.target.closest&&e.target.closest('#pn-form'))hitungPanen();});
+
+/* ---------------- INVOICE PDF ----------------
+   PDF dibuat di perangkat, tanpa pustaka tambahan: A4, huruf Helvetica bawaan PDF. */
+const LEBAR_HV=[278,278,355,556,556,889,667,191,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,278,278,584,584,584,556,1015,667,667,722,722,667,611,778,722,278,500,667,556,833,722,778,667,778,722,667,611,722,667,944,667,667,611,278,278,278,469,556,333,556,556,500,556,556,278,556,556,222,222,500,222,833,556,556,556,556,333,500,278,556,500,722,500,500,500,334,260,334,584];
+const LEBAR_HB=[278,333,474,556,556,889,722,238,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,333,333,584,584,584,611,975,722,722,722,722,667,611,778,722,278,556,722,611,833,722,778,667,778,722,667,611,722,667,944,667,667,611,333,278,333,584,556,333,556,611,556,611,556,333,611,611,278,278,556,278,889,611,611,611,611,389,556,333,611,556,778,556,556,500,389,280,389,584];
+function buatPdfInvoice(x){const c=DB.cycle;
+ const ascii=t=>String(t==null?'':t).replace(/[–—]/g,'-').replace(/×/g,'x').replace(/·/g,'-').replace(/[^\x20-\x7e]/g,'?');
+ const lebar=(t,sz,b)=>{const w=b?LEBAR_HB:LEBAR_HV;let n=0;for(const ch of t){n+=w[ch.charCodeAt(0)-32]||556;}return n*sz/1000;};
+ const hal=[[]];let y=56;const kiri=50,kanan=545,BAWAH=780;
+ const op=s=>hal[hal.length-1].push(s);
+ const teks=(xx,yy,t,sz=10,b=false,rgb='0.12 0.16 0.20')=>{t=ascii(t);op(`BT /${b?'F2':'F1'} ${sz} Tf ${rgb} rg ${xx.toFixed(2)} ${(842-yy).toFixed(2)} Td (${t.replace(/([\\()])/g,'\\$1')}) Tj ET`);};
+ const teksKanan=(xr,yy,t,sz=10,b=false,rgb)=>{t=ascii(t);teks(xr-lebar(t,sz,b),yy,t,sz,b,rgb);};
+ const garis=(yy,w=0.6,rgb='0.80 0.83 0.86')=>op(`${rgb} RG ${w} w ${kiri} ${(842-yy).toFixed(2)} m ${kanan} ${(842-yy).toFixed(2)} l S`);
+ const abu='0.32 0.38 0.43',hijau='0.09 0.29 0.23';
+ const kepalaTabel=()=>{teks(kiri,y,'Timbangan ke',9,true,abu);teksKanan(400,y,'Jumlah',9,true,abu);teksKanan(kanan,y,'Berat',9,true,abu);y+=6;garis(y,1,'0.12 0.16 0.20');y+=15;};
+ teks(kiri,y,'AR-FARM',22,true,hijau);teksKanan(kanan,y-4,'INVOICE',16,true);y+=15;
+ teks(kiri,y,'Modern Duck Farming',10,false,abu);teksKanan(kanan,y,'No. '+x.inv,10,false,abu);y+=14;
+ teksKanan(kanan,y,fmtLong(toDate(x.date)),10,false,abu);y+=30;
+ teks(kiri,y,'DITUJUKAN KEPADA',8,true,abu);teksKanan(kanan,y,'ASAL',8,true,abu);y+=16;
+ teks(kiri,y,x.pembeli,13,true);teksKanan(kanan,y,barnName(x.barn)+' - Batch '+c.code,11,true);y+=14;
+ teks(kiri,y,'Pengambil bebek'+(x.hp?' - '+x.hp:''),10,false,abu);teksKanan(kanan,y,c.breed+' hidup',10,false,abu);y+=30;
+ kepalaTabel();
+ const tb=x.timbangan&&x.timbangan.length?x.timbangan:[{ekor:x.qty,kg:x.kg}];
+ tb.forEach((t,i)=>{if(y>BAWAH){hal.push([]);y=60;teks(kiri,y,'Invoice '+x.inv+' (lanjutan)',10,true,abu);y+=22;kepalaTabel();}
+  teks(kiri,y,String(i+1),10);teksKanan(400,y,num(t.ekor)+' ekor',10);teksKanan(kanan,y,num(t.kg,1)+' kg',10);y+=6;garis(y);y+=14;});
+ if(y>BAWAH-190){hal.push([]);y=60;}
+ teks(kiri,y,'Total',11,true);teksKanan(400,y,num(x.qty)+' ekor',11,true);teksKanan(kanan,y,num(x.kg,1)+' kg',11,true);y+=26;
+ teks(kiri,y,'Rata-rata per ekor',10,false,abu);teksKanan(kanan,y,num(x.kg/x.qty,2)+' kg',10);y+=6;garis(y);y+=16;
+ teks(kiri,y,'Harga per kg',10,false,abu);teksKanan(kanan,y,rp(x.harga),10);y+=6;garis(y);y+=22;
+ teks(kiri,y,'Jumlah yang harus dibayar',13,true);teksKanan(kanan,y,rp(x.total),17,true,hijau);y+=22;
+ teks(kiri,y,'Status: '+(x.pay==='PAID'?'LUNAS':x.pay==='DP'?'DP':'BELUM DIBAYAR'),10,true,x.pay==='PAID'?hijau:'0.54 0.35 0.00');y+=60;
+ teks(kiri+50,y,'Penjual',10,false,abu);teks(kanan-150,y,'Pengambil',10,false,abu);y+=52;
+ op(`0.12 0.16 0.20 RG 0.6 w ${kiri} ${842-y} m ${kiri+180} ${842-y} l S`);op(`0.12 0.16 0.20 RG 0.6 w ${kanan-180} ${842-y} m ${kanan} ${842-y} l S`);y+=14;
+ teks(kiri+62,y,'AR-FARM',10,true);teks(kanan-180+Math.max(0,(180-lebar(ascii(x.pembeli),10,true))/2),y,x.pembeli,10,true);y+=30;
+ teks(kiri,y,'Dicatat oleh '+(x.oleh||'-')+' - '+fmtDT(toDate(x.date))+' - '+x.code+' - dibuat dari aplikasi AR-FARM',8,false,abu);
+ /* susun berkas PDF */
+ const obj=[];const n=hal.length;const idHal=i=>5+i*2,idIsi=i=>6+i*2;
+ obj[1]='<< /Type /Catalog /Pages 2 0 R >>';
+ obj[2]=`<< /Type /Pages /Kids [${hal.map((_,i)=>idHal(i)+' 0 R').join(' ')}] /Count ${n} >>`;
+ obj[3]='<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>';
+ obj[4]='<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>';
+ hal.forEach((h,i)=>{const isi=h.join('\n');obj[idHal(i)]=`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${idIsi(i)} 0 R >>`;obj[idIsi(i)]=`<< /Length ${isi.length} >>\nstream\n${isi}\nendstream`;});
+ let pdf='%PDF-1.4\n';const off=[];for(let i=1;i<obj.length;i++){off[i]=pdf.length;pdf+=`${i} 0 obj\n${obj[i]}\nendobj\n`;}
+ const xref=pdf.length;pdf+=`xref\n0 ${obj.length}\n0000000000 65535 f \n`;for(let i=1;i<obj.length;i++)pdf+=String(off[i]).padStart(10,'0')+' 00000 n \n';
+ pdf+=`trailer\n<< /Size ${obj.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+ const byte=new Uint8Array(pdf.length);for(let i=0;i<pdf.length;i++)byte[i]=pdf.charCodeAt(i)&255;
+ return new Blob([byte],{type:'application/pdf'});}
+function berkasInvoice(code){const x=(DB.panen||[]).find(y=>y.code===code);if(!x){toast('Invoice tidak ditemukan.','err');return null;}
+ const nama=`Invoice-${x.inv}-${String(x.pembeli).replace(/[^A-Za-z0-9]+/g,'-').replace(/^-|-$/g,'')||'pembeli'}.pdf`;const blob=buatPdfInvoice(x);
+ return {x,nama,blob,file:new File([blob],nama,{type:'application/pdf'})};}
+function unduhInvoice(code){const b=berkasInvoice(code);if(!b)return;const url=URL.createObjectURL(b.blob);const a=document.createElement('a');a.href=url;a.download=b.nama;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);toast('PDF invoice diunduh: '+b.nama);}
+function cetakInvoice(code){const b=berkasInvoice(code);if(!b)return;const url=URL.createObjectURL(b.blob);const w=window.open(url,'_blank');if(!w){unduhInvoice(code);toast('Jendela cetak diblokir. PDF diunduh, cetak dari berkas itu.','warn');}setTimeout(()=>URL.revokeObjectURL(url),120000);}
+async function bagikanInvoice(code){const b=berkasInvoice(code);if(!b)return;
+ try{if(navigator.canShare&&navigator.canShare({files:[b.file]})){await navigator.share({files:[b.file],title:'Invoice '+b.x.inv,text:`Invoice ${b.x.inv} AR-FARM - ${rp(b.x.total)}`});return;}}
+ catch(e){if(e&&e.name==='AbortError')return;}
+ unduhInvoice(code);toast('Perangkat ini tidak bisa membagikan berkas langsung. PDF diunduh, kirim dari WhatsApp.','warn');}

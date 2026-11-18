@@ -473,8 +473,10 @@ export const ACTIONS = {
     need(user, ['OWNER', 'MANAGER']);
     const v = z.object({
       barn: z.string(),
-      qty: z.number().int().positive().max(100000),
-      weightKg: z.number().positive().max(200000),
+      qty: z.number().int().positive().max(100000).optional(),
+      weightKg: z.number().positive().max(200000).optional(),
+      // Rincian tiap timbangan (per 10/15 ekor). Kalau diisi, total dihitung dari sini.
+      timbangan: z.array(z.object({ ekor: z.number().int().positive().max(1000), kg: z.number().positive().max(5000) })).min(1).max(300).optional(),
       pricePerKg: z.number().positive(),
       customer: z.string().optional(),
       customerName: z.string().trim().optional(),
@@ -482,6 +484,11 @@ export const ACTIONS = {
       pay: z.enum(['UNPAID', 'DP', 'PAID']).optional(),
       note: z.string().trim().optional()
     }).parse(p);
+    if (v.timbangan) {
+      v.qty = v.timbangan.reduce((a, t) => a + t.ekor, 0);
+      v.weightKg = Math.round(v.timbangan.reduce((a, t) => a + t.kg, 0) * 1000) / 1000;
+    }
+    if (!v.qty || !v.weightKg) throw new ActionError('Isi timbangan panen: jumlah ekor dan beratnya.');
     await requirePhoto(c, file);
 
     const b = await barnId(c, v.barn, user);
@@ -518,8 +525,8 @@ export const ACTIONS = {
       VALUES ($1,$2,'PANEN',$3,$4,$5,$6,$6,true,$7,$7,now()) RETURNING id`,
       [code, cust, paid ? 'PAID' : 'CONFIRMED', paid ? 'PAID' : v.pay === 'DP' ? 'DP' : 'UNPAID', v.note || null, total, user.id])).rows[0];
 
-    const it = (await c.query(`INSERT INTO order_item(order_id,product_id,cycle_id,barn_id,qty,weight_kg,price_per_kg)
-      VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`, [o.id, prod.id, cy.id, b, v.qty, v.weightKg, v.pricePerKg])).rows[0];
+    const it = (await c.query(`INSERT INTO order_item(order_id,product_id,cycle_id,barn_id,qty,weight_kg,price_per_kg,timbangan)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, [o.id, prod.id, cy.id, b, v.qty, v.weightKg, v.pricePerKg, v.timbangan ? JSON.stringify(v.timbangan) : null])).rows[0];
 
     await c.query(`INSERT INTO population_tx(cycle_id,barn_id,type,qty,ref_type,ref_id,occurred_at,created_by)
       VALUES ($1,$2,'HARVEST',$3,'order_item',$4,now(),$5)`, [cy.id, b, -v.qty, it.id, user.id]);
@@ -532,7 +539,7 @@ export const ACTIONS = {
     await audit(c, user.id, 'CREATE', 'order',
       `Panen ${code} — ${v.qty} ekor, ${v.weightKg} kg (rata-rata ${avg.toFixed(2)} kg/ekor) @ ${rp(v.pricePerKg)}/kg = ${rp(total)} — Kandang ${v.barn}, sisa ${left} ekor`, o.id);
     await notify(c, ['OWNER'], 'harvest', `Panen ${v.qty} ekor dari Kandang ${v.barn}`, `${v.weightKg} kg — ${rp(total)}, sisa ${left} ekor`, '/penjualan');
-    return { code, total, avg: +avg.toFixed(3), remaining: left, photo };
+    return { code, total, avg: +avg.toFixed(3), remaining: left, photo, batch: cy.code };
   },
 
   /* Ubah target batch yang sedang berjalan. Jumlah/harga/tanggal DOD tetap terkunci. */
