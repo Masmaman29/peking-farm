@@ -6,9 +6,10 @@
    on the page. All data is DEMO DATA.
    ===================================================================== */
 const D = (m,d,h=8,mi=0)=>new Date(2026,m-1,d,h,mi);
-const fmtDate = d=>d.toLocaleDateString('id-ID',{day:'numeric',month:'short',year:'numeric'});
-const fmtDT = d=>d.toLocaleDateString('id-ID',{day:'numeric',month:'short'})+' '+d.toTimeString().slice(0,5);
-const fmtLong = d=>d.toLocaleDateString('id-ID',{day:'numeric',month:'long',year:'numeric'});
+const fmtDate = d=>{d=d==null?d:(d instanceof Date?d:new Date(d));return tglSah(d)?d.toLocaleDateString('id-ID',{day:'numeric',month:'short',year:'numeric'}):'\u2014';};
+const tglSah = d=>d instanceof Date&&!isNaN(d);
+const fmtDT = d=>{d=d==null?d:(d instanceof Date?d:new Date(d));return tglSah(d)?d.toLocaleDateString('id-ID',{day:'numeric',month:'short'})+' '+d.toTimeString().slice(0,5):'\u2014';};
+const fmtLong = d=>{d=d==null?d:(d instanceof Date?d:new Date(d));return tglSah(d)?d.toLocaleDateString('id-ID',{day:'numeric',month:'long',year:'numeric'}):'\u2014';};
 const rp = n=>'Rp '+Math.round(n).toLocaleString('id-ID');
 const num = (n,dec=0)=>(n===null||n===undefined||n===''||Number.isNaN(Number(n)))?'\u2014':Number(n).toLocaleString('id-ID',{minimumFractionDigits:dec,maximumFractionDigits:dec});
 const pct = (n,dec=1)=>num(n,dec)+'%';
