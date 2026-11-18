@@ -12,6 +12,14 @@ export async function buildBootstrap(user, batchCode) {
   const fin = finRoles.has(user.role);
   const ak = user.role === 'ANAK_KANDANG';
   const cfg = await config();
+  /* Angka yang belum pernah disetel orang = angka BAWAAN, bukan milik farm ini.
+     Aplikasi menandainya, dan angka turunan dari kurva bawaan tidak dihitung. */
+  const bawaanKey = { target_panen_hari: 'targetPanenHari', target_bobot: 'targetBobot', target_mortalitas_pct: 'targetMortalitasPct',
+    min_stok_pakan_hari: 'minStokPakanHari', bobot_dod_kg: 'bobotDodKg', batas_mortalitas_harian: 'batasMortalitasHarian',
+    batas_deviasi_pakan_pct: 'batasPakanPct', batas_selisih_opname_kg: 'batasSelisihKg', ambang_approval_rp: 'ambangApprovalRp',
+    jam_kerja: 'jamKerja', kurva_target_bobot: 'targetCurve', target_fcr: 'targetFcr' };
+  const bawaan = (await rows('SELECT key FROM master_config WHERE updated_by IS NULL'))
+    .map(r => bawaanKey[r.key]).filter(Boolean);
   const farm = await one('SELECT * FROM farm ORDER BY created_at LIMIT 1');
   const barns = await rows('SELECT id,code,name,capacity,note,is_active FROM barn WHERE farm_id=$1 ORDER BY code', [farm.id]);
   const bcode = Object.fromEntries(barns.map(b => [b.id, b.code]));
@@ -96,16 +104,17 @@ export async function buildBootstrap(user, batchCode) {
   return {
     now: new Date().toISOString(),
     master: {
-      hargaDOD: +cfg.harga_dod, hargaPakanKg: +cfg.harga_pakan_kg,
       // Harga pakan yang BENAR-BENAR dibayar, rata-rata tertimbang dari nota pembelian.
-      // Dipakai untuk proyeksi biaya, supaya tidak memakai angka isian yang mungkin basi.
+      // Tidak ada harga isian: harga DOD dan pakan diketik dari nota tiap pembelian.
       hargaPakanRata: +(hargaPakanRata?.harga_kg || 0),
+      bobotDodKg: +(cfg.bobot_dod_kg || 0), targetFcr: +(cfg.target_fcr || 0),
       targetPanenHari: +cfg.target_panen_hari, targetBobotMin: +cfg.target_bobot.min, targetBobotMax: +cfg.target_bobot.max, targetMortalitasPct: +cfg.target_mortalitas_pct,
       minStokPakanHari: +cfg.min_stok_pakan_hari, fotoWajib: !!cfg.foto_wajib, jamKerja: [cfg.jam_kerja.mulai, cfg.jam_kerja.selesai],
       kontakWhatsapp: cfg.kontak_whatsapp || '', kontakEmail: cfg.kontak_email || '',
       kontakAlamat: cfg.kontak_alamat || '', kontakJam: cfg.kontak_jam || '',
       batasMortalitasHarian: +cfg.batas_mortalitas_harian, batasPakanPct: +cfg.batas_deviasi_pakan_pct, batasSelisihKg: +cfg.batas_selisih_opname_kg,
-      ambangApprovalRp: +cfg.ambang_approval_rp, targetCurve: cfg.kurva_target_bobot,
+      ambangApprovalRp: +cfg.ambang_approval_rp, targetCurve: cfg.kurva_target_bobot || [],
+      bawaan,
     },
     farm: { id: farm.id, name: farm.name, location: farm.location },
     users: users.map(u => ({ id: u.id, name: u.name, role: u.role, barn: bcode[u.barn_id] || null, active: u.is_active, phone: u.phone, email: u.email, lastLogin: u.last_login_at, archived: !!u.archived_at })),
