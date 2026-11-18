@@ -17,8 +17,8 @@ const needPhoto=form=>{if(MASTER.fotoWajib&&!fileOf(form)){toast('Foto bukti waj
 
 async function login(phone,password){
   state.busy=true;render();
-  try{const u=await api('/auth/login',{method:'POST',body:JSON.stringify({phone,password})});state.user=null;await loadDB();state.user=DB.users.find(x=>x.id===u.id)||{id:u.id,name:u.name,role:u.role,barn:null};state.page=u.role==='ANAK_KANDANG'?'ak-home':'dashboard';state.view='app';toast(`Selamat datang, ${u.name}`);}
-  catch(e){toast(e.message,'err');}
+  try{const u=await api('/auth/login',{method:'POST',body:JSON.stringify({phone,password})});state.user=null;state.lastPhone=null;await loadDB();state.user=DB.users.find(x=>x.id===u.id)||{id:u.id,name:u.name,role:u.role,barn:null};state.page=u.role==='ANAK_KANDANG'?'ak-home':'dashboard';state.view='app';toast(`Selamat datang, ${u.name}`);}
+  catch(e){state.lastPhone=phone;toast(e.message,'err');}
   finally{state.busy=false;render();}
 }
 async function logout(){try{await api('/auth/logout',{method:'POST'});}catch{}state.user=null;DB=null;state.view='login';state.aiOpen=false;state.modal=null;state.aiMsgs=[];render();}
