@@ -83,7 +83,7 @@ function pasangMataPassword(){
     bungkus.appendChild(tbl);
   });
 }
-function renderLayer(){const L=document.getElementById('layer');let html='';if(state.modal)html+=modalHTML(state.modal.m,state.modal.opts);if(state.aiOpen)html+=aiDrawer();if(state.kamera)html+=kameraHTML();L.innerHTML=html;pasangMataPassword();pasangKamera();const f=L.querySelector('input:not([type=hidden]),select,textarea');if(f&&state.modal&&!state.kamera)setTimeout(()=>f.focus(),50);}
+function renderLayer(){const L=document.getElementById('layer');let html='';if(state.modal){try{html+=modalHTML(state.modal.m,state.modal.opts);}catch(e){console.error(e);const nm=state.modal.m;state.modal=null;setTimeout(()=>toast('Form "'+nm+'" gagal dibuka: '+(e&&e.message||e),'err'),0);}}if(state.aiOpen)html+=aiDrawer();if(state.kamera)html+=kameraHTML();L.innerHTML=html;pasangMataPassword();pasangKamera();const f=L.querySelector('input:not([type=hidden]),select,textarea');if(f&&state.modal&&!state.kamera)setTimeout(()=>f.focus(),50);}
 function modalHTML(m,o={}){
  const barnSel=(name='barn',sel)=>{const t=(typeof calc.kandangTerisi==='function'?calc.kandangTerisi():[]);return `<div class="f"><label>Kandang</label><select name="${name}">${t.length?t.map(b=>`<option value="${b.id}"${sel===b.id?' selected':''}>${b.name} — ${num(calc.isiKandang(b.id))} ekor</option>`).join(''):barnOptions()}</select></div>`;};
  if(m==='correction'){const rec=o.type==='FEED'?DB.feedRecords.find(r=>r.id===o.id):o.type==='MORT'?DB.mortality.find(r=>r.id===o.id):DB.weights.find(r=>r.id===o.id);const old=o.type==='FEED'?calc.feedVal(rec)+' kg':o.type==='MORT'?rec.qty+' ekor':rec.total+' kg (total)';const unit=o.type==='FEED'?'kg':o.type==='MORT'?'ekor':'kg';
@@ -140,7 +140,7 @@ function modalHTML(m,o={}){
 
  if(m==='cycle'){const free=calc.kandangKosong();const today=new Date().toISOString().slice(0,10);
   if(!free.length)return modalWrap('Batch Baru',`<div class="alert warn">${ic('alert',16)}<div><b>Tidak ada kandang kosong</b>Semua kandang aktif masih berisi ternak. Batch baru hanya bisa masuk ke kandang yang sudah kosong dan sudah dibersihkan.</div></div>`,`<button class="btn" data-act="modal-close">Tutup</button>`);
-  const dod=free.filter(b=>/^D/i.test(b.id));const urut=dod.length?dod.concat(free.filter(b=>!/^D/i.test(b.id))):free;
+  const dod=free.filter(b=>/^D/i.test(b.id));const urut=dod.length?dod.concat(free.filter(b=>!/^D/i.test(b.id))):free;const sel=o.barn||o.id||'';
   return modalWrap('Batch Baru',`<form class="form" id="c-form" data-act="submit-cycle">
    <div class="f-row"><div class="f"><label>Jumlah DOD masuk (ekor)</label><input name="qty" type="number" min="1" required placeholder="0" data-act="cycle-calc" autofocus></div>
     <div class="f"><label>Masuk ke kandang</label><select name="barn" data-act="cycle-calc">${urut.map(b=>`<option value="${b.id}"${sel===b.id?' selected':''}>${b.name} — muat ${num(b.cap)} ekor</option>`).join('')}</select></div></div>
