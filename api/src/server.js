@@ -26,7 +26,35 @@ const COOKIE = () => ({ path: '/', httpOnly: true, sameSite: 'lax', secure, maxA
 
 await app.register(cookie, { secret: process.env.SESSION_SECRET || 'dev-secret' });
 await app.register(multipart, { limits: { fileSize: 12 * 1024 * 1024, files: 1 } });
-await app.register(rateLimit, { global: false });
+await app.register(rateLimit, {
+  global: false,
+  // Pesan penolakan dalam bahasa Indonesia, lengkap dengan sisa waktunya.
+  errorResponseBuilder: (req, ctx) => ({
+    code: 'TERLALU_SERING',
+    message: `Terlalu banyak percobaan. Coba lagi ${Math.max(1, Math.ceil((ctx.ttl || 0) / 60000))} menit lagi.`,
+  }),
+});
+
+/* ---------- pembatas login ----------
+   Dihitung per nomor HP dan hanya untuk password yang SALAH, bukan per koneksi
+   internet. Di kandang semua orang memakai WiFi yang sama; kalau dihitung per
+   koneksi, satu orang salah ketik bisa memblokir semua yang lain. Hitungan
+   dihapus begitu passwordnya benar, jadi orang yang tahu passwordnya tidak
+   pernah terblokir. */
+const LOGIN_MAKS = 20, LOGIN_JENDELA = 15 * 60 * 1000;
+const gagalLogin = new Map();
+function sisaBlokir(kunci) {
+  const r = gagalLogin.get(kunci);
+  if (!r) return 0;
+  if (Date.now() - r.mulai > LOGIN_JENDELA) { gagalLogin.delete(kunci); return 0; }
+  return r.n >= LOGIN_MAKS ? LOGIN_JENDELA - (Date.now() - r.mulai) : 0;
+}
+function catatGagal(kunci) {
+  const r = gagalLogin.get(kunci);
+  if (!r || Date.now() - r.mulai > LOGIN_JENDELA) gagalLogin.set(kunci, { n: 1, mulai: Date.now() });
+  else r.n++;
+  if (gagalLogin.size > 500) for (const [k, v] of gagalLogin) if (Date.now() - v.mulai > LOGIN_JENDELA) gagalLogin.delete(k);
+}
 /* ---------- berkas dikecilkan sebelum dikirim ----------
    Sinyal di kandang sering lemah. Teks (HTML, JS, JSON) dikirim dalam bentuk
    gzip supaya yang diunduh HP turun jauh. Gambar dan berkas lain dilewati
@@ -116,14 +144,21 @@ app.setErrorHandler((err, req, reply) => {
 
 app.get('/api/v1/health', async () => ({ ok: true, db: !!(await one('SELECT 1 x')) }));
 
-app.post('/api/v1/auth/login', { config: { rateLimit: { max: 10, timeWindow: '15 minutes' } } }, async (req, reply) => {
+// Batas per koneksi dipasang longgar: hanya untuk menahan mesin penebak yang
+// mencoba ribuan kali, bukan untuk membatasi orang di kandang.
+app.post('/api/v1/auth/login', { config: { rateLimit: { max: 300, timeWindow: '15 minutes' } } }, async (req, reply) => {
   const { phone, password } = req.body || {};
+  const akun = String(phone || '').trim().toLowerCase();
+  const sisa = sisaBlokir(akun);
+  if (sisa > 0) return reply.code(429).send({ code: 'TERLALU_SERING', message: `Password salah ${LOGIN_MAKS} kali. Coba lagi ${Math.ceil(sisa / 60000)} menit lagi, atau minta tautan ganti password.` });
   const u = await one('SELECT * FROM app_user WHERE (phone=$1 OR lower(name)=lower($1)) AND is_active', [String(phone || '').trim()]);
   const ok = u && u.password_hash && await argon2.verify(u.password_hash, String(password || ''));
   if (!ok) {
+    catatGagal(akun);
     await tx(null, c => audit(c, u?.id || null, 'LOGIN', 'session', `Login gagal untuk "${phone}"`, null, null, null, req));
     return reply.code(401).send({ code: 'BAD_CREDENTIALS', message: 'Nomor/nama atau password salah.' });
   }
+  gagalLogin.delete(akun);
   const s = await one(`INSERT INTO session(user_id,expires_at,ip,user_agent) VALUES ($1, now() + interval '${SESSION_DAYS} day', $2, $3) RETURNING id`, [u.id, req.ip, req.headers['user-agent'] || null]);
   await q('UPDATE app_user SET last_login_at=now(), failed_logins=0 WHERE id=$1', [u.id]);
   await tx(null, c => audit(c, u.id, 'LOGIN', 'session', `Login sebagai ${u.role}`, s.id, null, null, req));
