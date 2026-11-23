@@ -129,7 +129,7 @@ document.addEventListener('click',e=>{
   case 'modal':openModal(d.m,{type:d.type,id:d.id,product:d.product,kind:d.kind});break;
   case 'modal-close':closeModal();break;
   case 'kamera-buka':bukaKamera(d.id);break;
-  case 'buka-kandang':(async()=>{state.loading=true;render();try{await loadDB(d.code);state.tab='aktif';}finally{state.loading=false;render();}})();break;
+  case 'buka-kandang':(async()=>{state.loading=true;render();try{await loadDB(d.code);state.tab='aktif';}catch(e){toast(pesanGagal(e),'err');}finally{state.loading=false;render();}})();break;
   case 'tb-tambah':{const tb=document.getElementById('tb-body');if(tb){tb.insertAdjacentHTML('beforeend',barisTimbang());hitungPanen();const ins=tb.querySelectorAll('[name=tb_ekor]');ins[ins.length-1].focus();}break;}
   case 'tb-hapus':{const tr=el.closest('tr');const tb=document.getElementById('tb-body');if(tr&&tb&&tb.children.length>1){tr.remove();hitungPanen();}break;}
   case 'inv-unduh':unduhInvoice(d.id);break;
@@ -144,6 +144,7 @@ document.addEventListener('click',e=>{
   case 'reject':openModal('reject',{id:d.id,kind:d.kind});break;
   case 'order-status':act('ORDER_STATUS',{id:d.id,status:d.s}).then(r=>{if(r){toast(`Order ${d.id} → ${d.s}${d.s==='CONFIRMED'?' · stok berkurang':''}`);render();}});break;
   case 'reset-cancel':location.href=location.pathname;break;
+  case 'muat-ulang':state.gagal={pesan:'Menghubungi server…',sibuk:true};render();boot();break;
   case 'toggle-archived':state.showArchived=!state.showArchived;render();break;
   case 'barn-toggle':act('BARN_TOGGLE',{code:d.id}).then(r=>{if(r){toast(r.active?'Kandang diaktifkan.':'Kandang dinonaktifkan.');render();}});break;
   case 'user-toggle':act('USER_TOGGLE',{id:d.id}).then(r=>{if(r){toast(r.active?'Pengguna diaktifkan.':'Pengguna dinonaktifkan.');render();}});break;
@@ -318,18 +319,29 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
 });
 
 /* ---------------- BOOT ---------------- */
-(async function boot(){
+async function boot(){
   const mReset=location.hash.match(/^#reset=([A-Za-z0-9-]{8,40})$/);
   if(mReset){return resetBoot(mReset[1]);}
   if(location.hash==='#website' || SITE_ONLY){return siteBoot();}
-  try{const me=await api('/auth/me');await loadDB();state.user=DB.users.find(x=>x.id===me.id)||me;state.page=me.role==='ANAK_KANDANG'?'ak-home':'dashboard';state.view='app';}
-  catch{
+  state.gagal=null;
+  let me=null;
+  try{me=await api('/auth/me');}
+  catch(e){
+    // Hanya 401/403 yang berarti belum login. Koneksi putus atau server mati
+    // bukan alasan menampilkan layar masuk — itu ditampilkan sebagai kegagalan.
+    if(!(e&&(e.status===401||e.status===403))){state.user=null;state.gagal={pesan:pesanGagal(e)};return render();}
+  }
+  if(me){
+    try{await loadDB();state.user=DB.users.find(x=>x.id===me.id)||me;state.page=me.role==='ANAK_KANDANG'?'ak-home':'dashboard';state.view='app';}
+    catch(e){state.user=null;DB=null;state.gagal={pesan:pesanGagal(e)};return render();}
+  }else{
     state.user=null;state.view='login';
     try{const st=await api('/public/setup');if(st.needed)state.view='setup';}catch{}
     if(state.view!=='setup'){try{state.publicStats=await api('/public/farm');}catch{state.publicStats={};}}
   }
   render();
-})();
+}
+boot();
 
 /* ---------------- TARIK KE BAWAH UNTUK REFRESH ----------------
    Di posisi paling atas, tarik layar ke bawah: data diambil ulang tanpa

@@ -289,7 +289,18 @@ function noCycle(){const boleh=['OWNER','MANAGER'].includes(state.user.role);con
 /* ---------------- ROUTER / RENDER ---------------- */
 const PAGES={dashboard:pgDashboard,siklus:pgSiklus,populasi:pgPopulasi,pakan:pgPakan,pertumbuhan:pgPertumbuhan,kesehatan:pgKesehatan,keuangan:pgKeuangan,penjualan:pgPenjualan,stok:pgStok,laporan:pgLaporan,persetujuan:pgPersetujuan,pengguna:pgPengguna,pengaturan:pgPengaturan,audit:pgAudit,anomali:pgAnomali};
 const AK={'ak-home':()=>halamanKandang(),'ak-input':akInputMenu,'ak-kandang':akKandang,'ak-riwayat':akRiwayat,'ak-pakan':akPakan,'ak-mati':akMati,'ak-timbang':akTimbang,'ak-kondisi':akKondisi,'ak-sehat':akSehat,'ak-success':akSuccess};
-function render(){const root=document.getElementById('root');if(state.view!=='site'&&state.user&&!DB){root.innerHTML='<div class="login-form" style="height:100%"><div class="login-card">'+skeleton()+'</div></div>';return;}
+/* Layar saat data tidak bisa diambil: beri tahu kenapa dan beri jalan keluar,
+   jangan biarkan kerangka abu-abu diam terus tanpa penjelasan. */
+function layarGagal(g){return `<div class="login-form" style="height:100%"><div class="login-card" style="text-align:center">
+ <div style="color:var(--gold);margin-bottom:6px">${ic('alert',30)}</div>
+ <h2>${g.sibuk?'Mencoba lagi…':'Gagal memuat data'}</h2>
+ <p class="sub" style="margin-top:8px">${esc(g.pesan||'')}</p>
+ ${g.sibuk?'':`<button class="btn primary lg" style="margin-top:18px" data-act="muat-ulang">Coba lagi</button>`}
+ <p class="sub" style="margin-top:14px;font-size:12px">Data yang sudah tersimpan di server tidak hilang.</p>
+</div></div>`;}
+function render(){const root=document.getElementById('root');
+ if(state.gagal){root.innerHTML=layarGagal(state.gagal);renderLayer();return;}
+ if(state.view!=='site'&&state.user&&!DB){root.innerHTML='<div class="login-form" style="height:100%"><div class="login-card">'+skeleton()+'</div></div>';return;}
  if(state.view==='site'){root.innerHTML=renderSite();root.querySelector('.site').scrollTop=0;renderLayer();return;}
  if(state.view==='reset'){root.innerHTML=renderReset();renderLayer();return;}
  if(state.view==='setup'){root.innerHTML=renderSetup();renderLayer();return;}

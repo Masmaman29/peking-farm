@@ -4,6 +4,8 @@ import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import fstatic from '@fastify/static';
 import path from 'node:path';
+import fs from 'node:fs';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import argon2 from 'argon2';
 import crypto from 'node:crypto';
@@ -25,8 +27,67 @@ const COOKIE = () => ({ path: '/', httpOnly: true, sameSite: 'lax', secure, maxA
 await app.register(cookie, { secret: process.env.SESSION_SECRET || 'dev-secret' });
 await app.register(multipart, { limits: { fileSize: 12 * 1024 * 1024, files: 1 } });
 await app.register(rateLimit, { global: false });
-await app.register(fstatic, { root: process.env.UPLOAD_DIR || path.join(__dirname, '../../data/uploads'), prefix: '/uploads/', decorateReply: false });
-await app.register(fstatic, { root: path.join(__dirname, '../../web'), prefix: '/', decorateReply: true });
+/* ---------- berkas dikecilkan sebelum dikirim ----------
+   Sinyal di kandang sering lemah. Teks (HTML, JS, JSON) dikirim dalam bentuk
+   gzip supaya yang diunduh HP turun jauh. Gambar dan berkas lain dilewati
+   karena sudah padat. */
+const BISA_GZIP = /^(?:text\/|application\/(?:javascript|json|manifest\+json|xml)|image\/svg)/i;
+app.addHook('onSend', (req, reply, payload, done) => {
+  try {
+    if (req.method === 'HEAD' || reply.statusCode === 204 || reply.statusCode === 304) return done(null, payload);
+    if (reply.getHeader('content-encoding')) return done(null, payload);
+    if (!/\bgzip\b/i.test(String(req.headers['accept-encoding'] || ''))) return done(null, payload);
+    if (!BISA_GZIP.test(String(reply.getHeader('content-type') || ''))) return done(null, payload);
+    reply.header('vary', 'accept-encoding');
+    if (typeof payload === 'string' || Buffer.isBuffer(payload)) {
+      const buf = Buffer.isBuffer(payload) ? payload : Buffer.from(payload, 'utf8');
+      if (buf.length < 1024) return done(null, payload);
+      const out = zlib.gzipSync(buf, { level: 6 });
+      reply.header('content-encoding', 'gzip');
+      reply.removeHeader('content-length');
+      return done(null, out);
+    }
+    if (payload && typeof payload.pipe === 'function') {
+      const len = +reply.getHeader('content-length') || 0;
+      if (len && len < 1024) return done(null, payload);
+      reply.header('content-encoding', 'gzip');
+      reply.removeHeader('content-length');
+      return done(null, payload.pipe(zlib.createGzip({ level: 6 })));
+    }
+  } catch (e) { req.log.warn('gzip: ' + e.message); }
+  done(null, payload);
+});
+
+/* ---------- berkas disimpan di HP ----------
+   Berkas aplikasi (js, gambar, font) boleh disimpan lama di HP supaya buka
+   kedua dan seterusnya tidak mengunduh ulang. Supaya versi baru tetap langsung
+   terpakai, alamatnya diberi tanda versi: index.html ditulis ulang di sini
+   dengan ?v=<versi>, sedangkan index.html sendiri selalu diperiksa ke server. */
+const WEB = path.join(__dirname, '../../web');
+const VERSI = (() => {
+  try { const v = JSON.parse(fs.readFileSync(path.join(WEB, 'versi.json'), 'utf8')).commit; if (v) return String(v); } catch {}
+  try { return Math.round(fs.statSync(path.join(WEB, 'pages.js')).mtimeMs).toString(36); } catch {}
+  return String(Date.now());
+})();
+let indexCache = null;
+function halamanIndex() {
+  if (indexCache) return indexCache;
+  const h = fs.readFileSync(path.join(WEB, 'index.html'), 'utf8')
+    .replace(/(src|href)="(\/[^"?]+\.(?:js|css|png|svg|json))"/g, (m, a, u) => `${a}="${u}?v=${VERSI}"`);
+  indexCache = h;
+  return h;
+}
+const kirimIndex = async (req, reply) => reply.header('cache-control', 'no-cache').type('text/html; charset=utf-8').send(halamanIndex());
+app.get('/', kirimIndex);
+app.get('/index.html', kirimIndex);
+
+await app.register(fstatic, { root: process.env.UPLOAD_DIR || path.join(__dirname, '../../data/uploads'), prefix: '/uploads/', decorateReply: false, maxAge: 2592000000 });
+await app.register(fstatic, {
+  root: WEB, prefix: '/', decorateReply: true,
+  setHeaders(res, p) {
+    res.setHeader('cache-control', /versi\.json$|index\.html$/.test(p) ? 'no-cache' : 'public, max-age=31536000, immutable');
+  },
+});
 
 /* ---------- auth ---------- */
 async function currentUser(req) {
@@ -177,7 +238,7 @@ app.post('/api/v1/public/setup', { config: { rateLimit: { max: 5, timeWindow: '1
 app.post('/api/v1/public/orders', { config: { rateLimit: { max: 5, timeWindow: '10 minutes' } } }, async req => ({ ok: true, result: await publicOrder(req.body || {}, req) }));
 
 /* ---------- SPA fallback ---------- */
-app.setNotFoundHandler((req, reply) => { if (req.url.startsWith('/api/')) return reply.code(404).send({ code: 'NOT_FOUND', message: 'Endpoint tidak ada.' }); return reply.sendFile('index.html'); });
+app.setNotFoundHandler((req, reply) => { if (req.url.startsWith('/api/')) return reply.code(404).send({ code: 'NOT_FOUND', message: 'Endpoint tidak ada.' }); return kirimIndex(req, reply); });
 
 /* ---------- cron ringan: auto-lock tiap jam, bersih sesi ---------- */
 setInterval(() => { q('SELECT fn_auto_lock()').catch(() => {}); q('DELETE FROM session WHERE expires_at < now()').catch(() => {}); }, 3600 * 1000);

@@ -11,20 +11,30 @@ const finRoles = new Set(['OWNER', 'ADMIN']);
 export async function buildBootstrap(user, batchCode) {
   const fin = finRoles.has(user.role);
   const ak = user.role === 'ANAK_KANDANG';
-  const cfg = await config();
   /* Angka yang belum pernah disetel orang = angka BAWAAN, bukan milik farm ini.
      Aplikasi menandainya, dan angka turunan dari kurva bawaan tidak dihitung. */
   const bawaanKey = { target_mortalitas_pct: 'targetMortalitasPct', min_stok_pakan_hari: 'minStokPakanHari',
     batas_mortalitas_harian: 'batasMortalitasHarian', batas_deviasi_pakan_pct: 'batasPakanPct',
     batas_selisih_opname_kg: 'batasSelisihKg', ambang_approval_rp: 'ambangApprovalRp', jam_kerja: 'jamKerja', pakem_pakan: 'pakemPakan' };
-  const bawaan = (await rows('SELECT key FROM master_config WHERE updated_by IS NULL'))
-    .map(r => bawaanKey[r.key]).filter(Boolean);
-  const farm = await one('SELECT * FROM farm ORDER BY created_at LIMIT 1');
-  const barns = await rows('SELECT id,code,name,capacity,note,is_active FROM barn WHERE farm_id=$1 ORDER BY code', [farm.id]);
-  const bcode = Object.fromEntries(barns.map(b => [b.id, b.code]));
-  // Semua batch yang sedang berjalan. Satu baris per batch, dengan kandang
-  // yang sedang ditempatinya (bisa dua kandang kalau sedang pindah).
-  const batches = await rows(`
+  /* Potongan SQL yang dipakai beberapa query di bawah. */
+  const HARI = `(now() AT TIME ZONE 'Asia/Jakarta')::date`;
+  const TGL = `(t.occurred_at AT TIME ZONE 'Asia/Jakarta')::date`;
+  const PAKAI = `t.cycle_id=v.cycle_id AND t.barn_id=v.barn_id AND t.type='USAGE' AND t.status IN ('RECORDED','APPROVED') AND t.deleted_at IS NULL`;
+  const MATI = `m.cycle_id=v.cycle_id AND m.barn_id=v.barn_id AND m.deleted_at IS NULL AND m.status<>'SUPERSEDED'`;
+  const SAH = `t.deleted_at IS NULL AND ((t.type='PURCHASE' AND t.status='APPROVED') OR (t.type='USAGE' AND t.status IN ('RECORDED','APPROVED')) OR (t.type='ADJUSTMENT' AND t.status='APPROVED'))`;
+
+  /* ---- Gelombang 1 ----
+     Semua yang tidak bergantung pada hasil query lain diminta sekaligus, bukan
+     satu per satu. Di sinyal dan jaringan lambat ini yang paling terasa. */
+  const [cfg, bawaanRows, farm, batches, hargaPakanRata, hargaJenis, barnPopRows, opname,
+    inventory, invTx, customers, orders, corrections, anomalies, harian, mortUmur,
+    mortSebab, stokFarm, stokJenis, pakaiFarm, auditRows, punya] = await Promise.all([
+    config(),
+    rows('SELECT key FROM master_config WHERE updated_by IS NULL'),
+    one('SELECT * FROM farm ORDER BY created_at LIMIT 1'),
+    // Semua batch yang sedang berjalan. Satu baris per batch, dengan kandang
+    // yang sedang ditempatinya (bisa dua kandang kalau sedang pindah).
+    rows(`
     SELECT cycle_id, code, dod_date, dod_qty, target_days, stage,
            SUM(population)::int           AS population,
            MIN(umur_hari)::int            AS umur_hari,
@@ -35,61 +45,138 @@ export async function buildBootstrap(user, batchCode) {
            (array_agg(barn_name ORDER BY population DESC))[1]    AS barn_name
       FROM v_batch_aktif
      GROUP BY cycle_id, code, dod_date, dod_qty, target_days, stage
-     ORDER BY dod_date`);
-  // Populasi tiap kandang dari SELURUH batch, bukan hanya batch yang sedang
-  // dibuka. Dipakai layar untuk tahu kandang mana yang benar-benar kosong.
-  const hargaPakanRata = await one('SELECT harga_kg FROM v_harga_pakan_rata');
-  const hargaJenis = await rows('SELECT jenis, harga_kg, kg_dibeli FROM v_harga_pakan_jenis');
-  const barnPop = Object.fromEntries((await rows(
-    `SELECT barn_code, SUM(population)::int n FROM v_batch_aktif GROUP BY barn_code`))
-    .map(r => [r.barn_code, r.n]));
+     ORDER BY dod_date`),
+    one('SELECT harga_kg FROM v_harga_pakan_rata'),
+    rows('SELECT jenis, harga_kg, kg_dibeli FROM v_harga_pakan_jenis'),
+    // Populasi tiap kandang dari SELURUH batch, bukan hanya batch yang sedang
+    // dibuka. Dipakai layar untuk tahu kandang mana yang benar-benar kosong.
+    rows(`SELECT barn_code, SUM(population)::int n FROM v_batch_aktif GROUP BY barn_code`),
+    rows('SELECT * FROM feed_stock_opname ORDER BY occurred_at'),
+    rows('SELECT i.id,i.name,i.unit,i.category cat,i.min_qty min,i.avg_weight_kg "avgW", COALESCE(s.qty,0) qty FROM inventory i LEFT JOIN v_inventory_stock s ON s.inventory_id=i.id WHERE i.is_active ORDER BY i.category,i.name'),
+    rows('SELECT * FROM inventory_tx ORDER BY occurred_at DESC LIMIT 300'),
+    rows('SELECT * FROM customer ORDER BY created_at'),
+    rows(`SELECT o.*, oi.product_id, oi.qty, oi.weight_kg, oi.price_per_kg, oi.barn_id
+     FROM "order" o JOIN order_item oi ON oi.order_id=o.id ORDER BY o.created_at DESC`),
+    rows(`SELECT c.*, a.status, a.requested_by, a.requested_at, a.decided_by, a.decided_at, a.reject_reason,
+     (SELECT file_url FROM attachment at WHERE at.entity_type='correction_request' AND at.entity_id=c.id LIMIT 1) photo
+     FROM correction_request c JOIN approval a ON a.id=c.approval_id ORDER BY c.created_at DESC`),
+    rows('SELECT dedupe_key,status,verified_by,verify_note FROM anomaly'),
+    /* Ringkasan harian SEMUA kandang yang berisi ternak — pakan & kematian. */
+    rows(`
+    SELECT v.code, v.barn_code, v.barn_name, v.population, v.umur_hari, c.feed_plan, c.dod_weight_kg,
+      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE ${PAKAI} AND ${TGL} = ${HARI} AND t.sesi='PAGI'),0) AS pakan_pagi,
+      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE ${PAKAI} AND ${TGL} = ${HARI} AND COALESCE(t.sesi,'SORE')='SORE'),0) AS pakan_sore,
+      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE ${PAKAI}),0) AS pakan_total,
+      (SELECT w.avg_kg FROM weight_record w WHERE w.cycle_id=v.cycle_id AND w.barn_id=v.barn_id AND w.deleted_at IS NULL AND w.status<>'SUPERSEDED' ORDER BY w.occurred_at DESC LIMIT 1) AS bobot_akhir,
+      (SELECT ${HARI} - (w.occurred_at AT TIME ZONE 'Asia/Jakarta')::date FROM weight_record w WHERE w.cycle_id=v.cycle_id AND w.barn_id=v.barn_id AND w.deleted_at IS NULL AND w.status<>'SUPERSEDED' ORDER BY w.occurred_at DESC LIMIT 1) AS hari_sejak_timbang,
+      COALESCE((SELECT SUM(x.qty) FROM population_tx x WHERE x.cycle_id=v.cycle_id AND x.barn_id=v.barn_id AND x.qty>0),0)::int AS masuk,
+      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE ${PAKAI} AND ${TGL} = ${HARI}),0) AS pakan_hari_ini,
+      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE ${PAKAI} AND ${TGL} = ${HARI} - 1),0) AS pakan_kemarin,
+      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE ${PAKAI} AND ${TGL} BETWEEN ${HARI} - 3 AND ${HARI} - 1),0) AS pakan_3hari,
+      COALESCE((SELECT COUNT(DISTINCT ${TGL}) FROM feed_transaction t WHERE ${PAKAI} AND ${TGL} BETWEEN ${HARI} - 3 AND ${HARI} - 1),0)::int AS hari_tercatat,
+      COALESCE((SELECT SUM(m.qty) FROM mortality m WHERE ${MATI}),0)::int AS mati,
+      COALESCE((SELECT SUM(m.qty) FROM mortality m WHERE ${MATI} AND (m.occurred_at AT TIME ZONE 'Asia/Jakarta')::date = ${HARI}),0)::int AS mati_hari_ini
+    FROM v_batch_aktif v JOIN cycle c ON c.id = v.cycle_id ORDER BY v.dod_date, v.barn_code`),
+    rows(`
+    SELECT ((m.occurred_at AT TIME ZONE 'Asia/Jakarta')::date - c.dod_date) + 1 AS umur, SUM(m.qty)::int AS n
+      FROM mortality m JOIN cycle c ON c.id = m.cycle_id
+     WHERE m.deleted_at IS NULL AND m.status<>'SUPERSEDED' GROUP BY 1 ORDER BY 1`),
+    rows(`SELECT cause, SUM(qty)::int AS n FROM mortality WHERE deleted_at IS NULL AND status<>'SUPERSEDED' GROUP BY cause ORDER BY 2 DESC`),
+    one(`SELECT COALESCE(SUM(qty_kg),0) AS kg FROM feed_transaction WHERE deleted_at IS NULL AND ((type='PURCHASE' AND status='APPROVED') OR (type='USAGE' AND status IN ('RECORDED','APPROVED')) OR (type='ADJUSTMENT' AND status='APPROVED'))`),
+    /* Stok gudang seluruh farm, dipecah per jenis pakan. */
+    rows(`
+    SELECT f.type::text AS jenis,
+           COALESCE(SUM(t.qty_kg) FILTER (WHERE t.type='PURCHASE'),0) AS beli,
+           COALESCE(-SUM(t.qty_kg) FILTER (WHERE t.type='USAGE'),0) AS pakai,
+           COALESCE(SUM(t.qty_kg),0) AS stok
+      FROM feed_transaction t JOIN feed f ON f.id = t.feed_id
+     WHERE ${SAH} GROUP BY f.type`),
+    /* Rata-rata pemakaian per hari seluruh farm, 7 hari terakhir yang ada catatannya (tanpa hari ini). */
+    one(`
+    SELECT COALESCE(-SUM(t.qty_kg),0) AS kg, COUNT(DISTINCT (t.occurred_at AT TIME ZONE 'Asia/Jakarta')::date)::int AS hari
+      FROM feed_transaction t
+     WHERE t.type='USAGE' AND t.status IN ('RECORDED','APPROVED') AND t.deleted_at IS NULL
+       AND (t.occurred_at AT TIME ZONE 'Asia/Jakarta')::date BETWEEN ${HARI} - 7 AND ${HARI} - 1`),
+    ak
+      ? rows('SELECT id,actor_id,action,entity_type,entity_id,detail,occurred_at FROM audit_log WHERE actor_id=$1 ORDER BY id DESC LIMIT 100', [user.id])
+      : rows('SELECT id,actor_id,action,entity_type,entity_id,detail,occurred_at,hash FROM audit_log ORDER BY id DESC LIMIT 500'),
+    ak && user.barn_id ? one('SELECT cycle_id FROM v_batch_aktif WHERE barn_id=$1 ORDER BY dod_date LIMIT 1', [user.barn_id]) : Promise.resolve(null),
+  ]);
+  const bawaan = bawaanRows.map(r => bawaanKey[r.key]).filter(Boolean);
+  const barnPop = Object.fromEntries(barnPopRows.map(r => [r.barn_code, r.n]));
+  const audit = auditRows;
 
   // Batch yang sedang dibuka di layar: yang diminta, atau yang paling tua
   // (paling dekat panen) supaya yang terpenting muncul duluan.
   let pilih = batchCode && batches.find(b => b.code === batchCode);
-  if (ak && user.barn_id) {
-    const punya = await one('SELECT cycle_id FROM v_batch_aktif WHERE barn_id=$1 ORDER BY dod_date LIMIT 1', [user.barn_id]);
-    pilih = punya ? batches.find(b => b.cycle_id === punya.cycle_id) : pilih;
-  }
-  // Batch aktif yang sudah habis dipanen (populasi 0) tetap bisa dibuka lewat kodenya,
-  // supaya hasil panen dan invoice-nya masih bisa dilihat sebelum batch ditutup.
-  const habis = !pilih && batchCode && !ak ? await one(`SELECT * FROM cycle WHERE farm_id=$1 AND code=$2 AND status='ACTIVE'`, [farm.id, batchCode]) : null;
-  const cycle = habis ? habis : (pilih || batches[0])
-    ? await one('SELECT * FROM cycle WHERE id=$1', [(pilih || batches[0]).cycle_id])
-    : await one(`SELECT * FROM cycle WHERE farm_id=$1 AND status='ACTIVE' ORDER BY dod_date LIMIT 1`, [farm.id]);
-  const prevCycles = await rows(`SELECT s.* FROM v_cycle_summary s JOIN cycle c ON c.id=s.cycle_id
-     WHERE c.farm_id=$1 AND c.status<>'ACTIVE' ORDER BY s.dod_date DESC`, [farm.id]);
-  const cycleSummary = cycle ? await one('SELECT * FROM v_cycle_summary WHERE cycle_id=$1', [cycle.id]) : null;
-  const users = await rows(`SELECT id,name,role,barn_id,is_active,phone,email,last_login_at,archived_at FROM app_user WHERE farm_id=$1 ORDER BY role,name`, [farm.id]);
+  if (ak && user.barn_id) pilih = punya ? batches.find(b => b.cycle_id === punya.cycle_id) : pilih;
 
-  const popTx = cycle ? await rows(`SELECT id,occurred_at,type,barn_id,qty,created_by,ref_type,ref_id FROM population_tx WHERE cycle_id=$1 ORDER BY occurred_at`, [cycle.id]) : [];
-  const mortality = cycle ? await rows(`SELECT m.*, (SELECT file_url FROM attachment a WHERE a.entity_type='mortality' AND a.entity_id=m.id ORDER BY version DESC LIMIT 1) photo,
+  /* ---- Gelombang 2: yang butuh id farm, sekaligus menentukan batch yang dibuka. ---- */
+  const [barns, users, products, prevCycles, batchHabisRows, cycle] = await Promise.all([
+    rows('SELECT id,code,name,capacity,note,is_active FROM barn WHERE farm_id=$1 ORDER BY code', [farm.id]),
+    rows(`SELECT id,name,role,barn_id,is_active,phone,email,last_login_at,archived_at FROM app_user WHERE farm_id=$1 ORDER BY role,name`, [farm.id]),
+    rows('SELECT * FROM product WHERE farm_id=$1 ORDER BY type', [farm.id]),
+    rows(`SELECT s.* FROM v_cycle_summary s JOIN cycle c ON c.id=s.cycle_id
+     WHERE c.farm_id=$1 AND c.status<>'ACTIVE' ORDER BY s.dod_date DESC`, [farm.id]),
+    rows(`SELECT c.code FROM cycle c WHERE c.farm_id=$1 AND c.status='ACTIVE' AND NOT EXISTS (SELECT 1 FROM v_batch_aktif v WHERE v.cycle_id=c.id) ORDER BY c.dod_date`, [farm.id]),
+    (async () => {
+      // Batch aktif yang sudah habis dipanen (populasi 0) tetap bisa dibuka lewat kodenya,
+      // supaya hasil panen dan invoice-nya masih bisa dilihat sebelum batch ditutup.
+      const habis = !pilih && batchCode && !ak ? await one(`SELECT * FROM cycle WHERE farm_id=$1 AND code=$2 AND status='ACTIVE'`, [farm.id, batchCode]) : null;
+      if (habis) return habis;
+      return (pilih || batches[0])
+        ? one('SELECT * FROM cycle WHERE id=$1', [(pilih || batches[0]).cycle_id])
+        : one(`SELECT * FROM cycle WHERE farm_id=$1 AND status='ACTIVE' ORDER BY dod_date LIMIT 1`, [farm.id]);
+    })(),
+  ]);
+  const bcode = Object.fromEntries(barns.map(b => [b.id, b.code]));
+
+  /* ---- Gelombang 3: isi batch yang sedang dibuka. ---- */
+  const [popTx, mortality, feedAll, weights, health, barnCond, expenses, cycleSummary, fcrSeri, panen, uangRow, biaya] = cycle ? await Promise.all([
+    rows(`SELECT id,occurred_at,type,barn_id,qty,created_by,ref_type,ref_id FROM population_tx WHERE cycle_id=$1 ORDER BY occurred_at`, [cycle.id]),
+    rows(`SELECT m.*, (SELECT file_url FROM attachment a WHERE a.entity_type='mortality' AND a.entity_id=m.id ORDER BY version DESC LIMIT 1) photo,
             (SELECT a.source FROM attachment a WHERE a.entity_type='mortality' AND a.entity_id=m.id ORDER BY version DESC LIMIT 1) photo_source
-     FROM mortality m WHERE cycle_id=$1 AND deleted_at IS NULL AND status<>'SUPERSEDED' ORDER BY occurred_at`, [cycle.id]) : [];
-  const feedAll = cycle ? await rows(`SELECT f.*, (SELECT file_url FROM attachment a WHERE a.entity_type='feed_transaction' AND a.entity_id=f.id ORDER BY version DESC LIMIT 1) photo,
+     FROM mortality m WHERE cycle_id=$1 AND deleted_at IS NULL AND status<>'SUPERSEDED' ORDER BY occurred_at`, [cycle.id]),
+    rows(`SELECT f.*, (SELECT file_url FROM attachment a WHERE a.entity_type='feed_transaction' AND a.entity_id=f.id ORDER BY version DESC LIMIT 1) photo,
             (SELECT a.source FROM attachment a WHERE a.entity_type='feed_transaction' AND a.entity_id=f.id ORDER BY version DESC LIMIT 1) photo_source,
             (SELECT x.type::text FROM feed x WHERE x.id=f.feed_id) jenis
-     FROM feed_transaction f WHERE (cycle_id=$1 OR cycle_id IS NULL) AND deleted_at IS NULL ORDER BY occurred_at`, [cycle.id]) : [];
-  const opname = await rows('SELECT * FROM feed_stock_opname ORDER BY occurred_at');
-  const weights = cycle ? await rows(`SELECT w.*, (SELECT file_url FROM attachment a WHERE a.entity_type='weight_record' AND a.entity_id=w.id ORDER BY version DESC LIMIT 1) photo,
+     FROM feed_transaction f WHERE (cycle_id=$1 OR cycle_id IS NULL) AND deleted_at IS NULL ORDER BY occurred_at`, [cycle.id]),
+    rows(`SELECT w.*, (SELECT file_url FROM attachment a WHERE a.entity_type='weight_record' AND a.entity_id=w.id ORDER BY version DESC LIMIT 1) photo,
             (SELECT a.source FROM attachment a WHERE a.entity_type='weight_record' AND a.entity_id=w.id ORDER BY version DESC LIMIT 1) photo_source
-     FROM weight_record w WHERE cycle_id=$1 AND deleted_at IS NULL AND status<>'SUPERSEDED' ORDER BY occurred_at`, [cycle.id]) : [];
-  const health = cycle ? await rows('SELECT * FROM health_record WHERE cycle_id=$1 AND deleted_at IS NULL ORDER BY occurred_at', [cycle.id]) : [];
-  const barnCond = cycle ? await rows('SELECT * FROM barn_condition WHERE cycle_id=$1 ORDER BY occurred_at DESC LIMIT 200', [cycle.id]) : [];
-  const expenses = fin && cycle ? await rows('SELECT * FROM expense WHERE cycle_id=$1 AND deleted_at IS NULL ORDER BY occurred_at', [cycle.id]) : [];
-  const inventory = await rows('SELECT i.id,i.name,i.unit,i.category cat,i.min_qty min,i.avg_weight_kg "avgW", COALESCE(s.qty,0) qty FROM inventory i LEFT JOIN v_inventory_stock s ON s.inventory_id=i.id WHERE i.is_active ORDER BY i.category,i.name');
-  const invTx = await rows('SELECT * FROM inventory_tx ORDER BY occurred_at DESC LIMIT 300');
-  const products = await rows('SELECT * FROM product WHERE farm_id=$1 ORDER BY type', [farm.id]);
-  const customers = await rows('SELECT * FROM customer ORDER BY created_at');
-  const orders = await rows(`SELECT o.*, oi.product_id, oi.qty, oi.weight_kg, oi.price_per_kg, oi.barn_id
-     FROM "order" o JOIN order_item oi ON oi.order_id=o.id ORDER BY o.created_at DESC`);
-  const corrections = await rows(`SELECT c.*, a.status, a.requested_by, a.requested_at, a.decided_by, a.decided_at, a.reject_reason,
-     (SELECT file_url FROM attachment at WHERE at.entity_type='correction_request' AND at.entity_id=c.id LIMIT 1) photo
-     FROM correction_request c JOIN approval a ON a.id=c.approval_id ORDER BY c.created_at DESC`);
-  const audit = ak
-    ? await rows('SELECT id,actor_id,action,entity_type,entity_id,detail,occurred_at FROM audit_log WHERE actor_id=$1 ORDER BY id DESC LIMIT 100', [user.id])
-    : await rows('SELECT id,actor_id,action,entity_type,entity_id,detail,occurred_at,hash FROM audit_log ORDER BY id DESC LIMIT 500');
-  const anomalies = await rows('SELECT dedupe_key,status,verified_by,verify_note FROM anomaly');
+     FROM weight_record w WHERE cycle_id=$1 AND deleted_at IS NULL AND status<>'SUPERSEDED' ORDER BY occurred_at`, [cycle.id]),
+    rows('SELECT * FROM health_record WHERE cycle_id=$1 AND deleted_at IS NULL ORDER BY occurred_at', [cycle.id]),
+    rows('SELECT * FROM barn_condition WHERE cycle_id=$1 ORDER BY occurred_at DESC LIMIT 200', [cycle.id]),
+    fin ? rows('SELECT * FROM expense WHERE cycle_id=$1 AND deleted_at IS NULL ORDER BY occurred_at', [cycle.id]) : Promise.resolve([]),
+    one('SELECT * FROM v_cycle_summary WHERE cycle_id=$1', [cycle.id]),
+    /* Perkembangan FCR: satu baris tiap kali sampel ditimbang. */
+    rows(`
+    SELECT w.occurred_at, w.barn_id, w.avg_kg, w.sample_n,
+      ((w.occurred_at AT TIME ZONE 'Asia/Jakarta')::date - c.dod_date) + 1 AS umur,
+      COALESCE((SELECT SUM(x.qty) FROM population_tx x WHERE x.cycle_id=w.cycle_id AND x.barn_id=w.barn_id AND x.occurred_at<=w.occurred_at),0)::int AS pop,
+      COALESCE((SELECT SUM(x.qty) FROM population_tx x WHERE x.cycle_id=w.cycle_id AND x.barn_id=w.barn_id AND x.qty>0 AND x.occurred_at<=w.occurred_at),0)::int AS masuk,
+      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE t.cycle_id=w.cycle_id AND t.barn_id=w.barn_id AND t.type='USAGE' AND t.status IN ('RECORDED','APPROVED') AND t.deleted_at IS NULL AND t.occurred_at<=w.occurred_at),0) AS pakan,
+      c.dod_weight_kg
+    FROM weight_record w JOIN cycle c ON c.id=w.cycle_id
+    WHERE w.cycle_id=$1 AND w.deleted_at IS NULL AND w.status<>'SUPERSEDED' ORDER BY w.occurred_at`, [cycle.id]),
+    rows(`
+    SELECT o.code, o.created_at, o.payment_status, o.note, cu.name AS pembeli, cu.phone AS hp, oi.barn_id, oi.qty, oi.weight_kg, oi.price_per_kg, oi.timbangan,
+           (SELECT name FROM app_user u WHERE u.id=o.created_by) AS oleh
+      FROM order_item oi JOIN "order" o ON o.id=oi.order_id LEFT JOIN customer cu ON cu.id=o.customer_id
+     WHERE oi.cycle_id=$1 AND o.source::text='PANEN' AND o.status<>'CANCELLED' ORDER BY o.created_at`, [cycle.id]),
+    one(`
+    SELECT (c.dod_qty * c.dod_price) AS dod,
+      COALESCE((SELECT SUM(oi.weight_kg * oi.price_per_kg) FROM order_item oi JOIN "order" o ON o.id=oi.order_id WHERE oi.cycle_id=c.id AND o.source::text='PANEN' AND o.status<>'CANCELLED'),0) AS panen,
+      COALESCE((SELECT SUM(-t.qty_kg * COALESCE(hj.harga_kg,(SELECT harga_kg FROM v_harga_pakan_rata))) FROM feed_transaction t JOIN feed f ON f.id=t.feed_id LEFT JOIN v_harga_pakan_jenis hj ON hj.jenis=f.type::text
+                 WHERE t.cycle_id=c.id AND t.type='USAGE' AND t.status IN ('RECORDED','APPROVED') AND t.deleted_at IS NULL),0) AS pakan,
+      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE t.cycle_id=c.id AND t.type='USAGE' AND t.status IN ('RECORDED','APPROVED') AND t.deleted_at IS NULL),0) AS pakan_kg,
+      COALESCE((SELECT SUM(e.amount) FROM expense e WHERE e.cycle_id=c.id AND e.status='APPROVED' AND e.deleted_at IS NULL),0) AS lain
+    FROM cycle c WHERE c.id=$1`, [cycle.id]),
+    rows(`
+    SELECT e.id, e.created_at, e.category::text AS kat, e.amount, e.vendor, e.ref_no, e.status::text AS status,
+           (SELECT name FROM app_user u WHERE u.id=e.created_by) AS oleh,
+           EXISTS (SELECT 1 FROM attachment a WHERE a.entity_type='expense' AND a.entity_id=e.id) AS ada_nota
+      FROM expense e WHERE e.cycle_id=$1 AND e.deleted_at IS NULL ORDER BY e.created_at DESC`, [cycle.id]),
+  ]) : [[], [], [], [], [], [], [], null, [], [], null, []];
 
   // --- pemetaan ke bentuk prototype ---
   const feedRecords = [];
@@ -109,80 +196,9 @@ export async function buildBootstrap(user, batchCode) {
   const anomalyState = {};
   anomalies.forEach(a => { anomalyState[a.dedupe_key] = { status: a.status, note: a.verify_note, by: a.verified_by }; });
 
-  /* Ringkasan harian SEMUA kandang yang berisi ternak — pakan & kematian. */
-  const HARI = `(now() AT TIME ZONE 'Asia/Jakarta')::date`;
-  const TGL = `(t.occurred_at AT TIME ZONE 'Asia/Jakarta')::date`;
-  const PAKAI = `t.cycle_id=v.cycle_id AND t.barn_id=v.barn_id AND t.type='USAGE' AND t.status IN ('RECORDED','APPROVED') AND t.deleted_at IS NULL`;
-  const MATI = `m.cycle_id=v.cycle_id AND m.barn_id=v.barn_id AND m.deleted_at IS NULL AND m.status<>'SUPERSEDED'`;
-  const harian = await rows(`
-    SELECT v.code, v.barn_code, v.barn_name, v.population, v.umur_hari, c.feed_plan, c.dod_weight_kg,
-      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE ${PAKAI} AND ${TGL} = ${HARI} AND t.sesi='PAGI'),0) AS pakan_pagi,
-      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE ${PAKAI} AND ${TGL} = ${HARI} AND COALESCE(t.sesi,'SORE')='SORE'),0) AS pakan_sore,
-      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE ${PAKAI}),0) AS pakan_total,
-      (SELECT w.avg_kg FROM weight_record w WHERE w.cycle_id=v.cycle_id AND w.barn_id=v.barn_id AND w.deleted_at IS NULL AND w.status<>'SUPERSEDED' ORDER BY w.occurred_at DESC LIMIT 1) AS bobot_akhir,
-      (SELECT ${HARI} - (w.occurred_at AT TIME ZONE 'Asia/Jakarta')::date FROM weight_record w WHERE w.cycle_id=v.cycle_id AND w.barn_id=v.barn_id AND w.deleted_at IS NULL AND w.status<>'SUPERSEDED' ORDER BY w.occurred_at DESC LIMIT 1) AS hari_sejak_timbang,
-      COALESCE((SELECT SUM(x.qty) FROM population_tx x WHERE x.cycle_id=v.cycle_id AND x.barn_id=v.barn_id AND x.qty>0),0)::int AS masuk,
-      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE ${PAKAI} AND ${TGL} = ${HARI}),0) AS pakan_hari_ini,
-      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE ${PAKAI} AND ${TGL} = ${HARI} - 1),0) AS pakan_kemarin,
-      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE ${PAKAI} AND ${TGL} BETWEEN ${HARI} - 3 AND ${HARI} - 1),0) AS pakan_3hari,
-      COALESCE((SELECT COUNT(DISTINCT ${TGL}) FROM feed_transaction t WHERE ${PAKAI} AND ${TGL} BETWEEN ${HARI} - 3 AND ${HARI} - 1),0)::int AS hari_tercatat,
-      COALESCE((SELECT SUM(m.qty) FROM mortality m WHERE ${MATI}),0)::int AS mati,
-      COALESCE((SELECT SUM(m.qty) FROM mortality m WHERE ${MATI} AND (m.occurred_at AT TIME ZONE 'Asia/Jakarta')::date = ${HARI}),0)::int AS mati_hari_ini
-    FROM v_batch_aktif v JOIN cycle c ON c.id = v.cycle_id ORDER BY v.dod_date, v.barn_code`);
+  /* Jatah gram per umur: pakem farm, kecuali batch punya jatah khusus. */
   const pakem = cfg.pakem_pakan || [];
   const jatahUmur = (plan, umur) => { const r = (plan || pakem).find(x => umur >= +x[0] && umur <= +x[1]); return r ? +r[2] : null; };
-  const mortUmur = await rows(`
-    SELECT ((m.occurred_at AT TIME ZONE 'Asia/Jakarta')::date - c.dod_date) + 1 AS umur, SUM(m.qty)::int AS n
-      FROM mortality m JOIN cycle c ON c.id = m.cycle_id
-     WHERE m.deleted_at IS NULL AND m.status<>'SUPERSEDED' GROUP BY 1 ORDER BY 1`);
-  const mortSebab = await rows(`SELECT cause, SUM(qty)::int AS n FROM mortality WHERE deleted_at IS NULL AND status<>'SUPERSEDED' GROUP BY cause ORDER BY 2 DESC`);
-  const stokFarm = await one(`SELECT COALESCE(SUM(qty_kg),0) AS kg FROM feed_transaction WHERE deleted_at IS NULL AND ((type='PURCHASE' AND status='APPROVED') OR (type='USAGE' AND status IN ('RECORDED','APPROVED')) OR (type='ADJUSTMENT' AND status='APPROVED'))`);
-
-  /* ---- Halaman kandang: perkembangan FCR, hasil panen, uang batch ---- */
-  const fcrSeri = cycle ? await rows(`
-    SELECT w.occurred_at, w.barn_id, w.avg_kg, w.sample_n,
-      ((w.occurred_at AT TIME ZONE 'Asia/Jakarta')::date - c.dod_date) + 1 AS umur,
-      COALESCE((SELECT SUM(x.qty) FROM population_tx x WHERE x.cycle_id=w.cycle_id AND x.barn_id=w.barn_id AND x.occurred_at<=w.occurred_at),0)::int AS pop,
-      COALESCE((SELECT SUM(x.qty) FROM population_tx x WHERE x.cycle_id=w.cycle_id AND x.barn_id=w.barn_id AND x.qty>0 AND x.occurred_at<=w.occurred_at),0)::int AS masuk,
-      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE t.cycle_id=w.cycle_id AND t.barn_id=w.barn_id AND t.type='USAGE' AND t.status IN ('RECORDED','APPROVED') AND t.deleted_at IS NULL AND t.occurred_at<=w.occurred_at),0) AS pakan,
-      c.dod_weight_kg
-    FROM weight_record w JOIN cycle c ON c.id=w.cycle_id
-    WHERE w.cycle_id=$1 AND w.deleted_at IS NULL AND w.status<>'SUPERSEDED' ORDER BY w.occurred_at`, [cycle.id]) : [];
-  const panen = cycle ? await rows(`
-    SELECT o.code, o.created_at, o.payment_status, o.note, cu.name AS pembeli, cu.phone AS hp, oi.barn_id, oi.qty, oi.weight_kg, oi.price_per_kg, oi.timbangan,
-           (SELECT name FROM app_user u WHERE u.id=o.created_by) AS oleh
-      FROM order_item oi JOIN "order" o ON o.id=oi.order_id LEFT JOIN customer cu ON cu.id=o.customer_id
-     WHERE oi.cycle_id=$1 AND o.source::text='PANEN' AND o.status<>'CANCELLED' ORDER BY o.created_at`, [cycle.id]) : [];
-  const uangRow = cycle ? await one(`
-    SELECT (c.dod_qty * c.dod_price) AS dod,
-      COALESCE((SELECT SUM(oi.weight_kg * oi.price_per_kg) FROM order_item oi JOIN "order" o ON o.id=oi.order_id WHERE oi.cycle_id=c.id AND o.source::text='PANEN' AND o.status<>'CANCELLED'),0) AS panen,
-      COALESCE((SELECT SUM(-t.qty_kg * COALESCE(hj.harga_kg,(SELECT harga_kg FROM v_harga_pakan_rata))) FROM feed_transaction t JOIN feed f ON f.id=t.feed_id LEFT JOIN v_harga_pakan_jenis hj ON hj.jenis=f.type::text
-                 WHERE t.cycle_id=c.id AND t.type='USAGE' AND t.status IN ('RECORDED','APPROVED') AND t.deleted_at IS NULL),0) AS pakan,
-      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE t.cycle_id=c.id AND t.type='USAGE' AND t.status IN ('RECORDED','APPROVED') AND t.deleted_at IS NULL),0) AS pakan_kg,
-      COALESCE((SELECT SUM(e.amount) FROM expense e WHERE e.cycle_id=c.id AND e.status='APPROVED' AND e.deleted_at IS NULL),0) AS lain
-    FROM cycle c WHERE c.id=$1`, [cycle.id]) : null;
-
-  const biaya = cycle ? await rows(`
-    SELECT e.id, e.created_at, e.category::text AS kat, e.amount, e.vendor, e.ref_no, e.status::text AS status,
-           (SELECT name FROM app_user u WHERE u.id=e.created_by) AS oleh,
-           EXISTS (SELECT 1 FROM attachment a WHERE a.entity_type='expense' AND a.entity_id=e.id) AS ada_nota
-      FROM expense e WHERE e.cycle_id=$1 AND e.deleted_at IS NULL ORDER BY e.created_at DESC`, [cycle.id]) : [];
-
-  /* Stok gudang seluruh farm, dipecah per jenis pakan. */
-  const SAH = `t.deleted_at IS NULL AND ((t.type='PURCHASE' AND t.status='APPROVED') OR (t.type='USAGE' AND t.status IN ('RECORDED','APPROVED')) OR (t.type='ADJUSTMENT' AND t.status='APPROVED'))`;
-  const stokJenis = await rows(`
-    SELECT f.type::text AS jenis,
-           COALESCE(SUM(t.qty_kg) FILTER (WHERE t.type='PURCHASE'),0) AS beli,
-           COALESCE(-SUM(t.qty_kg) FILTER (WHERE t.type='USAGE'),0) AS pakai,
-           COALESCE(SUM(t.qty_kg),0) AS stok
-      FROM feed_transaction t JOIN feed f ON f.id = t.feed_id
-     WHERE ${SAH} GROUP BY f.type`);
-  /* Rata-rata pemakaian per hari seluruh farm, 7 hari terakhir yang ada catatannya (tanpa hari ini). */
-  const pakaiFarm = await one(`
-    SELECT COALESCE(-SUM(t.qty_kg),0) AS kg, COUNT(DISTINCT (t.occurred_at AT TIME ZONE 'Asia/Jakarta')::date)::int AS hari
-      FROM feed_transaction t
-     WHERE t.type='USAGE' AND t.status IN ('RECORDED','APPROVED') AND t.deleted_at IS NULL
-       AND (t.occurred_at AT TIME ZONE 'Asia/Jakarta')::date BETWEEN ${HARI} - 7 AND ${HARI} - 1`);
 
   return {
     now: new Date().toISOString(),
@@ -258,7 +274,7 @@ export async function buildBootstrap(user, batchCode) {
     mortUmur: mortUmur.map(m => ({ umur: +m.umur, n: m.n })),
     mortSebab: mortSebab.map(m => ({ sebab: m.cause, n: m.n })),
     stokPakanFarm: +stokFarm.kg,
-    batchHabis: (await rows(`SELECT c.code FROM cycle c WHERE c.farm_id=$1 AND c.status='ACTIVE' AND NOT EXISTS (SELECT 1 FROM v_batch_aktif v WHERE v.cycle_id=c.id) ORDER BY c.dod_date`, [farm.id])).map(r => ({ code: r.code })),
+    batchHabis: batchHabisRows.map(r => ({ code: r.code })),
     fcrSeri: fcrSeri.map(w => { const hidup = w.pop * +w.avg_kg; const awal = w.dod_weight_kg > 0 ? w.masuk * +w.dod_weight_kg : 0; const tambah = hidup - awal;
       return { date: w.occurred_at, barn: bcode[w.barn_id], umur: +w.umur, pop: w.pop, bobot: +w.avg_kg, pakan: +w.pakan, fcr: tambah > 0 && +w.pakan > 0 ? +w.pakan / tambah : null }; }),
     panen: panen.map((x, i) => ({ code: x.code, inv: `INV-${String(cycle.code).replace(/\D/g, '')}-${String(i + 1).padStart(2, '0')}`, date: x.created_at, pembeli: x.pembeli || 'Pengepul', hp: x.hp && x.hp !== '-' ? x.hp : '',

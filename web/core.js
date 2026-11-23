@@ -35,7 +35,27 @@ const canPage = (p)=> !!(state.user && ROLES[state.user.role].pages.includes(p))
 /* ---------------- DATA DARI SERVER ---------------- */
 let DB=null;            // snapshot dari GET /api/v1/bootstrap (bentuk sama dengan prototype)
 const API='/api/v1';
-async function api(path,opts={}){const r=await fetch(API+path,Object.assign({credentials:'same-origin',headers:opts.body&&!(opts.body instanceof FormData)?{'Content-Type':'application/json'}:{}},opts));const j=await r.json().catch(()=>({}));if(!r.ok){const e=new Error(j.message||('HTTP '+r.status));e.code=j.code;e.status=r.status;throw e;}return j;}
+/* Permintaan ke server tidak boleh menunggu selamanya: di sinyal kandang yang
+   putus-putus, layar bisa diam terus tanpa pesan. Lewat batas waktu, permintaan
+   dibatalkan dan errornya dimunculkan supaya ada tombol "Coba lagi". */
+const BATAS_TUNGGU=15000, BATAS_UNGGAH=60000;
+async function api(path,opts={}){
+  const batas=opts.body instanceof FormData?BATAS_UNGGAH:BATAS_TUNGGU;
+  const ac=typeof AbortController!=='undefined'?new AbortController():null;
+  const jam=ac?setTimeout(()=>ac.abort(),batas):null;
+  let r;
+  try{
+    r=await fetch(API+path,Object.assign({credentials:'same-origin',signal:ac?ac.signal:undefined,headers:opts.body&&!(opts.body instanceof FormData)?{'Content-Type':'application/json'}:{}},opts));
+  }catch(err){
+    const lewat=!!(ac&&ac.signal.aborted);
+    const e=new Error(lewat?`Server tidak menjawab dalam ${Math.round(batas/1000)} detik.`:'Tidak bisa menghubungi server. Periksa koneksi internet.');
+    e.timeout=lewat;e.jaringan=true;throw e;
+  }finally{if(jam)clearTimeout(jam);}
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok){const e=new Error(j.message||('HTTP '+r.status));e.code=j.code;e.status=r.status;throw e;}
+  return j;
+}
+const pesanGagal=e=>e&&e.status===401?'Sesi sudah habis. Silakan masuk lagi.':(e&&e.message)||'Tidak bisa menghubungi server.';
 const toDate=v=>v==null?v:(v instanceof Date?v:new Date(v));
 function hydrate(b){
   const d=x=>{if(!x)return x;['date','dodDate','createdAt','requestedAt','decidedAt','lastLogin','pickup'].forEach(k=>{if(x[k]!==undefined)x[k]=toDate(x[k]);});if(x.versions)x.versions.forEach(v=>v.date=toDate(v.date));return x;};
@@ -186,4 +206,4 @@ const barnName = b=>b==='ALL'?'Semua kandang':(DB.barns.find(x=>x.id===b)||{name
 const logAudit=()=>{}; // audit ditulis server
 
 /* ---------------- APP STATE ---------------- */
-const state={user:null,batch:null,lastPhone:null,page:'dashboard',busy:false,tab:null,range:'siklus',barn:'ALL',view:'login',sideOpen:false,notif:false,loading:false,akSuccess:null,aiOpen:false,aiMsgs:[],filters:{},foto:{},kamera:null};
+const state={user:null,batch:null,lastPhone:null,page:'dashboard',busy:false,tab:null,range:'siklus',barn:'ALL',view:'login',sideOpen:false,notif:false,loading:false,akSuccess:null,aiOpen:false,aiMsgs:[],filters:{},foto:{},kamera:null,gagal:null};

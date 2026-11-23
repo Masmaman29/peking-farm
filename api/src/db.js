@@ -1,7 +1,7 @@
 import pg from 'pg';
 const { Pool } = pg;
 
-export const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 10 });
+export const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 16 });
 
 /** Jalankan fn di dalam satu transaksi DB dengan konteks user untuk RLS. */
 export async function tx(ctx, fn) {
