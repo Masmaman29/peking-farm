@@ -405,6 +405,47 @@ const calc = {
     const score=Math.round(items.reduce((s,i)=>s+i[1],0)/items.length);
     return{score,items,lewat,status:score>=80?'NORMAL':score>=60?'WARNING':'CRITICAL'};},
   pendingApprovals(){const list=[];DB.corrections.filter(c=>c.status==='PENDING').forEach(c=>list.push({kind:'CORRECTION',id:c.id,date:c.requestedAt,title:`Koreksi pakan ${c.oldVal} kg → ${c.newVal} kg`,sub:`Alasan: ${c.reason}`,by:c.requestedBy,ref:c}));DB.orders.filter(o=>o.status==='PENDING_APPROVAL').forEach(o=>list.push({kind:'ORDER',id:o.id,date:o.date,title:`Penjualan ${o.qty} ekor ${DB.products.find(p=>p.id===o.product).name.replace('Bebek Peking ','')}`,sub:`ke ${DB.customers.find(c=>c.id===o.customer).name} — ${rp(calc.orderTotal(o))}`,by:o.user,ref:o}));DB.feedPurchases.filter(p=>p.status==='PENDING').forEach(p=>list.push({kind:'PURCHASE',id:p.id,date:p.date,title:`Pembelian pakan ${num(p.qty)} kg`,sub:`${p.vendor}${p.price?' — '+rp(p.qty*p.price):''}`,by:p.user,ref:p}));DB.expenses.filter(e=>e.status==='PENDING').forEach(e=>list.push({kind:'EXPENSE',id:e.id,date:e.date,title:`Biaya ${e.cat} ${rp(e.amount)}`,sub:e.vendor,by:e.user,ref:e}));return list.sort((a,b)=>b.date-a.date);},
+  /* Stok pakan di gudang saat siklus ini mulai: pembelian yang disetujui
+     SEBELUM tanggal DOD, dikurangi pemakaian sebelum tanggal itu. Dihitung
+     dari transaksi, bukan ditulis tangan — dulu kartunya selalu '0 kg'
+     dengan keterangan "Siklus #000 habis terpakai", batch yang tidak ada di
+     produksi. Kalau belum ada transaksi sebelum DOD, hasilnya memang 0. */
+  stokAwalSiklus(){
+    if(!DB.cycle||!DB.cycle.dodDate)return null;
+    const t0=+toDate(DB.cycle.dodDate);
+    const beli=(DB.feedPurchases||[]).filter(p=>p.status==='APPROVED'&&+toDate(p.date)<t0)
+      .reduce((a,p)=>a+Number(p.qty||0),0);
+    const pakai=(DB.feedRecords||[]).filter(r=>+toDate(r.date)<t0)
+      .reduce((a,r)=>a+calc.feedVal(r),0);
+    return Math.max(0, beli-pakai);
+  },
+  /* Katalog aturan anomali. Ini SATU sumber: jumlahnya dipakai halaman
+     Anomali, dan daftarnya bisa ditampilkan. Sebelumnya layar menulis
+     "Aturan Aktif 10" padahal mesinnya punya 11 aturan — angka itu ditulis
+     tangan dan sudah salah. Kalau menambah aturan di anomalies(), tambahkan
+     juga di sini supaya keduanya tidak berpisah lagi. */
+  aturanAnomali(){return [
+    ['AN-FEED-DEV','Konsumsi pakan menyimpang dari rata-rata 7 hari'],
+    ['AN-FEED-DIFF','Selisih stok pakan dengan catatan transaksi'],
+    ['AN-WEIGHT','Bobot menyimpang dari kurva target'],
+    ['AN-MORT','Kematian harian di atas ambang'],
+    ['AN-FCR','FCR memburuk dibanding batch sebelumnya'],
+    ['AN-HOURS','Input di luar jam kerja'],
+    ['AN-DUP','Input ganda pada sesi yang sama'],
+    ['AN-POP','Populasi tidak balance'],
+    ['AN-INV','Stok barang di bawah minimum'],
+    ['AN-FEEDLOW','Stok pakan tidak cukup sampai panen'],
+    ['AN-FOTO','Catatan tanpa foto bukti'],
+  ];},
+  /* Persen catatan pakan yang punya foto bukti. Terukur, bukan skor karangan.
+     Menggantikan "Skor Integritas Input 96/100" yang dulu ditulis tangan
+     dengan caption seolah hasil pengukuran. */
+  catatanBerfoto(){
+    const r=(DB.feedRecords||[]);
+    if(!r.length)return null;
+    const ada=r.filter(x=>!!x.photo).length;
+    return {ada, total:r.length, pct:ada/r.length*100};
+  },
   anomalies(){if(!DB.cycle)return [];const out=[];const fd=calc.feedToday(),avg=calc.feedAvg7();const dev=(fd-avg)/avg*100;
     if(Math.abs(dev)>MASTER.batasPakanPct)out.push({id:'AN-FEED-DEV',sev:dev>0?'warn':'warn',title:`Konsumsi pakan hari ini ${num(Math.abs(dev))}% lebih ${dev>0?'tinggi':'rendah'} dari rata-rata 7 hari`,detail:`Hari ini ${num(fd)} kg vs rata-rata ${num(avg,1)} kg/hari. Cek apakah ada input ganda atau pemberian ekstra.`,date:DEMO_TODAY,page:'pakan',rule:'Deviasi >'+MASTER.batasPakanPct+'% dari rata-rata 7 hari'});
     const fdif=calc.feedDiff();if(fdif&&Math.abs(fdif.diff)>=10)out.push({id:'AN-FEED-DIFF',sev:'warn',title:`Selisih stok pakan ${num(Math.abs(fdif.diff))} kg dengan catatan transaksi`,detail:`Stok teoritis ${num(fdif.theory)} kg, hasil opname fisik ${num(fdif.op.physical)} kg (${fmtDT(fdif.op.date)}).`,date:fdif.op.date,page:'stok',rule:'Selisih opname ≥10 kg'});

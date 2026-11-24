@@ -124,6 +124,15 @@ input,select,textarea{font:inherit}
 .kpi .lbl{color:var(--muted);font-size:12px;font-weight:600;display:flex;justify-content:space-between;gap:8px}
 .kpi .val{font-size:26px;font-weight:800;letter-spacing:-.01em;line-height:1.1;overflow-wrap:anywhere}
 .kpi.gold .val{font-size:21px}
+/* Kartu angka yang bisa diklik: tampilannya sama persis dengan yang tidak
+   bisa diklik, hanya ditambah tanda arah dan efek saat disentuh. */
+button.kpi{font:inherit;color:inherit;text-align:left;cursor:pointer;width:100%;appearance:none}
+button.kpi.klik:hover,button.kpi.klik:focus-visible{border-color:var(--acc);background:linear-gradient(150deg,rgba(255,255,255,.14),rgba(255,255,255,.06))}
+button.kpi.klik:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+button.kpi.klik:active{transform:translateY(1px)}
+.kpi .kpi-ke{position:absolute;top:14px;right:14px;color:var(--dim);opacity:.6;transition:opacity .15s,color .15s}
+button.kpi.klik:hover .kpi-ke,button.kpi.klik:focus-visible .kpi-ke{color:var(--acc);opacity:1}
+@media (prefers-reduced-motion:reduce){button.kpi.klik:active{transform:none}}
 .kpi .val small{font-size:13px;color:var(--muted);font-weight:600;margin-left:3px}
 .kpi .foot{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;margin-top:auto}
 .kpi .foot.up{color:var(--soft)}.kpi .foot.down{color:var(--danger)}.kpi .foot.warn{color:var(--warn)}
