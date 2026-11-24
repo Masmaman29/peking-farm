@@ -226,6 +226,157 @@ function teksTarget(){const a=calc.targetBobot(),b=calc.targetBobotMax();if(!a)r
 const NAMA_JENIS={STARTER:'starter',GROWER:'grower',FINISHER:'finisher'};
 const NAMA_BIAYA={OBAT:'Obat',VITAMIN:'Vitamin',SEKAM:'Sekam',LISTRIK:'Listrik',GAS:'Gas',TENAGA_KERJA:'Tenaga kerja',TRANSPORT:'Transport',PERALATAN:'Peralatan',MAINTENANCE:'Perbaikan',LAIN:'Lainnya',DOD:'DOD',PAKAN:'Pakan'};
 function barisKerja(judul,ket,kanan,tegas){return `<div class="hist" style="align-items:center;${tegas?'border-color:rgba(168,208,141,.45)':''}"><div style="flex:1;min-width:0"><b>${judul}</b><small style="display:block">${ket}</small></div><div style="flex:none;text-align:right">${kanan}</div></div>`;}
+/* Kartu HPP & BEP.
+   Dua angka berdampingan dan sengaja TIDAK dicampur:
+     AKTUAL   — biaya yang sudah terjadi dibagi panen yang sudah ada. Nol estimasi.
+     PROYEKSI — biaya nyata + sisa biaya, dibagi seluruh hasil sampai panen.
+   Yang dipakai untuk menentukan harga adalah yang proyeksi selama batch berjalan,
+   dan yang aktual begitu batch habis dipanen. Kalau datanya belum cukup, kartunya
+   menulis PERLU DATA beserta apa yang kurang — bukan angka yang terlihat jadi. */
+const LABEL_HPP = {
+  final:    ['ok',   'ANGKA FINAL',    'Batch sudah habis dipanen. Angka ini dari timbangan panen yang tercatat, bukan perkiraan.'],
+  sebagian: ['gold', 'PANEN SEBAGIAN', 'Sebagian bebek sudah dipanen, sebagian masih di kandang. Yang dipakai untuk menentukan harga adalah kolom PROYEKSI.'],
+  estimasi: ['warn', 'ESTIMASI',       'Belum ada panen. Seluruh angka di kartu ini masih perkiraan.'],
+};
+function kolomHpp(judul, tanda, perKg, perEkor, dasarKg, dasarEkor, ket){
+  return `<div style="flex:1;min-width:190px;padding:12px;border-radius:12px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07)">
+   <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><b style="font-size:12px;letter-spacing:.06em;color:var(--muted)">${judul}</b>${tanda}</div>
+   <b class="num" style="font-size:21px;display:block">${perKg!=null?rp(perKg):'—'}</b>
+   <small style="display:block;color:var(--muted);margin-bottom:8px">per kg bobot hidup</small>
+   <b class="num" style="font-size:15px;display:block">${perEkor!=null?rp(perEkor):'—'}</b>
+   <small style="display:block;color:var(--muted)">per ekor</small>
+   <small style="display:block;margin-top:9px;color:var(--dim)">Penyebut: ${dasarKg!=null?num(dasarKg,1)+' kg':'—'}${dasarEkor!=null?' · '+num(dasarEkor)+' ekor':''}</small>
+   ${ket?`<small style="display:block;margin-top:5px;color:var(--dim)">${ket}</small>`:''}</div>`;
+}
+function kartuHppBep(){
+  const ak = calc.hppAktual(), pr = calc.hppProyeksi(), mg = calc.marginKg();
+  const kurang = calc.kurangDataProyeksi();
+  const judul = `<p class="nav-sec" style="padding:18px 2px 8px">HPP & titik impas</p>`;
+
+  // Tidak ada panen DAN proyeksi tidak bisa dihitung: tidak ada angka apa pun.
+  if(!ak && !pr){
+    return `${judul}<div class="card"><div class="card-h"><h3>Biaya pokok batch ${DB.cycle.code}</h3>${badge('neutral','PERLU DATA')}</div>
+     <div class="alert warn">${ic('alert',16)}<div><b>Belum bisa dihitung</b>
+     ${kurang.length?'Yang masih kurang: '+kurang.join(', ')+'.':'Belum ada panen dan belum ada dasar perhitungan.'}
+     Angkanya muncul sendiri begitu datanya ada. Tidak ada angka perkiraan yang ditampilkan sebelum itu.</div></div></div>`;
+  }
+
+  const jenis = ak && ak.jenis==='final' ? 'final' : (ak ? 'sebagian' : 'estimasi');
+  const [w,label,ket] = LABEL_HPP[jenis];
+  const brl = calc.hppBerlaku();
+  const hp = calc.hargaPakanTerbaru(), kb = calc.kebutuhanPakanSisa();
+
+  const kolomAktual = ak
+    ? kolomHpp('BIAYA YANG SUDAH TERJADI', badge('ok','AKTUAL'), ak.perKg, ak.perEkor, ak.kg, ak.ekor,
+        ak.jenis==='sebagian' ? `Biaya seluruh batch dibagi panen pertama saja, karena ${num(ak.sisaEkor)} ekor belum dipanen. Jangan dipakai menentukan harga.` : 'Modal penuh dibagi seluruh hasil panen.')
+    : kolomHpp('BIAYA YANG SUDAH TERJADI', badge('neutral','PERLU DATA'), null, null, null, null,
+        'Belum ada panen, jadi belum ada pembagi. Angka ini muncul setelah panen pertama tercatat.');
+
+  const kolomProyeksi = pr
+    ? kolomHpp('PERKIRAAN SAMPAI PANEN', badge('warn','ESTIMASI'), pr.perKg, pr.perEkor, pr.kg, pr.ekor,
+        `${rp(pr.modalNyata)} biaya nyata + ${rp(pr.sisaBiaya)} perkiraan sisa. Penyebut: ${pr.kgPanen>0?num(pr.kgPanen,1)+' kg sudah dipanen + ':''}${num(pr.sisaEkor)} ekor x ${num(calc.targetBobot(),2)} kg target.`)
+    : kolomHpp('PERKIRAAN SAMPAI PANEN', badge('neutral','PERLU DATA'), null, null, null, null,
+        kurang.length ? 'Yang masih kurang: '+kurang.join(', ')+'.' : 'Batch sudah selesai, tidak ada lagi yang diproyeksikan.');
+
+  return `${judul}
+  <div class="card"><div class="card-h"><h3>Biaya pokok batch ${DB.cycle.code}</h3>${badge(w,label)}</div>
+   <div style="display:flex;flex-wrap:wrap;gap:12px">${kolomAktual}${kolomProyeksi}</div>
+
+   ${brl?`<div style="margin-top:14px;padding:13px;border-radius:12px;background:rgba(198,161,91,.1);border:1px solid rgba(198,161,91,.3)">
+     <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end">
+      <div style="flex:1;min-width:150px"><b class="num" style="font-size:22px;color:var(--gold)">${rp(brl.perKg)}</b>
+       <small style="display:block;color:var(--muted)">BEP harga jual per kg — dari HPP ${brl.jenis==='final'?'final':'proyeksi'}</small></div>
+      ${mg?`<div style="flex:1;min-width:150px;text-align:right"><b class="num" style="font-size:16px;color:${mg.selisih>0?'var(--sage)':'#E8836F'}">${mg.selisih>0?'+':''}${rp(mg.selisih)}/kg</b>
+       <small style="display:block;color:var(--muted)">terhadap harga produk ${rp(mg.harga)}/kg</small></div>`:''}
+     </div></div>`:''}
+
+   ${mg?`<div class="alert ${mg.selisih>0?'ok':'warn'}" style="margin-top:12px">${ic(mg.selisih>0?'growth':'alert',16)}<div>
+     <b>${mg.selisih>0?`Masih untung ${rp(mg.selisih)} per kg`:mg.selisih<0?`Rugi ${rp(Math.abs(mg.selisih))} per kg`:'Pas di titik impas'}</b>
+     Harga produk sekarang ${rp(mg.harga)}/kg, titik impas ${rp(mg.bep)}/kg. Di bawah ${rp(mg.bep)}/kg batch ini tidak menutup modal. Harga produk diubah di Penjualan → Produk.</div></div>`
+    :`<div class="alert info" style="margin-top:12px">${ic('money',16)}<div><b>Harga jual produk belum diisi</b> Isi harga produk Bebek Peking Hidup di Penjualan → Produk supaya selisih terhadap titik impas bisa ditampilkan.</div></div>`}
+
+   <div class="kv" style="margin-top:14px;grid-template-columns:1fr auto;row-gap:8px;font-size:13px">
+    <span>Modal nyata sampai hari ini</span><b class="num">${rp(calc.modal())}</b>
+    ${pr?`<span>Perkiraan sisa biaya pakan</span><b class="num">${rp(pr.sisaBiaya)}</b>`:''}
+    ${kb&&kb.kg>0?`<span>Kebutuhan pakan ${kb.hari} hari sisa</span><b class="num">${num(kb.kg,1)} kg</b>`:''}
+    ${hp?`<span>Harga pakan dipakai (nota terbaru)</span><b class="num">${rp(hp.harga)}/kg</b>
+     <span style="color:var(--dim)">— nota ${fmtDate(toDate(hp.tanggal))}${hp.jenis?', '+hp.jenis:''}${hp.cocokJenis?'':' (jenis lain, batch ini pakai '+(hp.jenisBatch||'belum tercatat')+')'}</span><span></span>`:''}
+    <span>Jatah pakan dipakai</span><b>${calc.jatahKhususBatch()?'jatah khusus batch ini':'pakem farm'}</b>
+   </div>
+
+   <small style="display:block;margin-top:11px;color:var(--dim)">${ket}
+   Modal = biaya DOD + pakan terpakai (harga nota per jenis) + biaya lain yang disetujui, batch ini saja.
+   Perkiraan sisa biaya hanya menghitung PAKAN: biaya sekali bayar seperti sekam dan obat tidak diproyeksikan berulang, jadi perkiraan ini sedikit lebih rendah dari kenyataan.
+   Belum termasuk biaya umum farm seperti listrik, gaji, dan sewa yang tidak ditempelkan ke batch.</small>
+  </div>
+  ${kartuSimulasiHarga()}`;
+}
+/* Simulasi harga panen. Harga bisa diedit pengguna; angkanya tidak disimpan dan
+   tidak dikirim ke server — ini alat hitung what-if, bukan data farm. */
+const SIM_HARGA_AWAL = [22000, 24000, 26000, 28000];
+function kartuSimulasiHarga(){
+  const d = calc.simulasiDasar();
+  if(!d) return '';
+  const harga = (state.simHarga && state.simHarga.length===4) ? state.simHarga : SIM_HARGA_AWAL;
+  const baris = calc.simulasiHarga(harga) || [];
+  return `<p class="nav-sec" style="padding:18px 2px 8px">Simulasi harga panen</p>
+  <div class="card"><div class="card-h"><h3>Laba rugi pada beberapa harga jual</h3>${badge(d.jenis==='final'?'ok':'warn',d.jenis==='final'?'DARI PANEN NYATA':'DARI PROYEKSI')}</div>
+   <div class="alert info" style="margin-bottom:12px">${ic('money',16)}<div><b>Harga boleh diubah</b>
+    Dihitung atas ${num(d.kg,1)} kg (${num(d.ekor)} ekor) dengan biaya ${rp(d.modal)} dan HPP ${rp(d.hppKg)}/kg.
+    Angka simulasi tidak disimpan dan tidak mengubah data apa pun.</div></div>
+   <div class="tbl-wrap"><table><thead><tr>
+     <th>Harga jual /kg</th><th class="r">Omzet</th><th class="r">Laba / rugi</th><th class="r">Margin /kg</th><th>Status</th>
+   </tr></thead><tbody>
+   ${baris.map((b,i)=>`<tr>
+     <td><input name="sim_${i}" data-act="sim-harga" data-i="${i}" type="number" step="500" min="0" max="200000" value="${harga[i]}" style="width:120px"></td>
+     <td class="r num">${rp(b.omzet)}</td>
+     <td class="r num"><b style="color:${b.laba>0?'var(--sage)':b.laba<0?'#E8836F':'var(--muted)'}">${b.laba>0?'+':''}${rp(b.laba)}</b></td>
+     <td class="r num">${b.marginKg>0?'+':''}${rp(b.marginKg)}</td>
+     <td>${b.status==='untung'?badge('ok','UNTUNG'):b.status==='rugi'?badge('danger','RUGI'):badge('gold','PAS DI BEP')}</td>
+   </tr>`).join('')}
+   </tbody></table></div>
+   <small style="display:block;margin-top:10px;color:var(--dim)">Laba = omzet − ${d.jenis==='final'?'biaya nyata':'(biaya nyata + perkiraan sisa biaya)'}. Belum termasuk biaya umum farm.</small>
+  </div>`;
+}
+/* Riwayat harga pembelian pakan, per jenis, dengan selisih terhadap nota
+   sebelumnya. Nota lama tidak pernah berubah: harga tersimpan di baris notanya
+   sendiri dan tabel feed_transaction append-only. */
+function kartuRiwayatHargaPakan(){
+  const r = calc.riwayatHargaPakan();
+  if(!r.length) return `<p class="nav-sec" style="padding:18px 2px 8px">Riwayat harga pakan</p>
+   <div class="card"><div class="alert info">${ic('feed',16)}<div><b>Belum ada nota pembelian pakan</b>
+   Riwayat harga muncul sendiri setelah pembelian pakan pertama dicatat beserta harganya.</div></div></div>`;
+  const panah = a => a==='naik'?'<span style="color:#E8836F">▲ naik</span>'
+    : a==='turun'?'<span style="color:var(--sage)">▼ turun</span>'
+    : a==='tetap'?'<span style="color:var(--muted)">= tetap</span>'
+    : '<span style="color:var(--dim)">nota pertama</span>';
+  return `<p class="nav-sec" style="padding:18px 2px 8px">Riwayat harga pakan</p>
+  <div class="card"><div class="card-h"><h3>Perubahan harga pembelian</h3>${badge('info',r.length+' jenis')}</div>
+   <div class="alert info" style="margin-bottom:12px">${ic('feed',16)}<div><b>Isi nota tidak pernah diubah</b>
+    Tiap nota menyimpan harganya sendiri dan tidak bisa ditimpa: tabel pembelian pakan bersifat tambah-saja,
+    pembatalan pun dicatat sebagai pembatalan. Tidak ada harga master yang bisa diketik — semua harga berasal dari nota.</div></div>
+   <div class="alert ok" style="margin-bottom:12px">${ic('growth',16)}<div><b>Pembelian baru tidak mengubah biaya batch lama</b>
+    Pakan yang sudah dimakan dinilai dengan harga yang berlaku <em>pada tanggal pemakaiannya</em>, bukan rata-rata sampai hari ini.
+    Jadi nota yang Bapak catat hari ini dengan tanggal hari ini tidak menyentuh biaya dan laba batch mana pun yang sudah lewat.</div></div>
+   <div class="alert warn" style="margin-bottom:12px">${ic('alert',16)}<div><b>Kecuali nota yang tanggalnya dimundurkan</b>
+    Yang menentukan penilaian adalah <em>tanggal nota</em>, bukan kapan nota itu dimasukkan. Nota yang dicatat hari ini tapi
+    diberi tanggal bulan lalu — atau nota lama yang baru disetujui sekarang — <em>tetap mengubah biaya batch yang sudah lewat,
+    termasuk batch yang sudah ditutup</em>. Jadi angka batch lama belum bisa disebut permanen. Catat nota pakan pada tanggal
+    kejadiannya dan setujui secepatnya supaya angka batch tidak bergerak lagi.</div></div>
+   ${r.map(j=>`<div style="margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:9px;margin-bottom:7px"><b>${esc(j.jenis)}</b>${badge('gold','terbaru '+rp(j.terbaru)+'/kg')}<small style="color:var(--dim)">${j.jmlNota} nota</small></div>
+    <div class="tbl-wrap"><table><thead><tr><th>Tanggal</th><th>Vendor</th><th class="r">Jumlah</th><th class="r">Harga /kg</th><th class="r">Selisih</th><th>Arah</th></tr></thead><tbody>
+    ${j.nota.map(n=>`<tr>
+      <td class="num">${fmtDate(toDate(n.tanggal))}</td>
+      <td>${esc(n.vendor||'—')}</td>
+      <td class="r num">${num(n.qty,0)} kg</td>
+      <td class="r num"><b>${rp(n.harga)}</b></td>
+      <td class="r num">${n.selisih==null?'—':(n.selisih>0?'+':'')+rp(n.selisih)+(n.pct!=null?` (${n.pct>0?'+':''}${num(n.pct,1)}%)`:'')}</td>
+      <td>${panah(n.arah)}</td>
+    </tr>`).join('')}
+    </tbody></table></div></div>`).join('')}
+  </div>`;
+}
 function halamanKandang(){const c=DB.cycle;if(!c)return '';
  const role=state.user.role;const ak=role==='ANAK_KANDANG';const kelola=['OWNER','MANAGER'].includes(role);
  const rows=(DB.harian||[]).filter(x=>x.code===c.code);const h=ak?(rows.find(x=>x.barn===state.user.barn)||rows[0]):rows[0];
@@ -251,12 +402,12 @@ function halamanKandang(){const c=DB.cycle;if(!c)return '';
   ...DB.weights.map(w=>({t:w.date,k:'Timbang sampel · '+w.n+' ekor',j:num(w.avg,2)+' kg/ekor',o:w.user})),
   ...panen.map(x=>({t:toDate(x.date),k:'Panen · '+x.pembeli,j:x.qty+' ekor · '+num(x.kg,1)+' kg',o:null,on:x.oleh})),
   ...DB.popTx.filter(t=>t.type==='DOD_IN').map(t=>({t:t.date,k:'DOD masuk',j:t.qty+' ekor',o:t.user}))].sort((a,b)=>b.t-a.t).slice(0,40);
- const fcrAkhir=pKg>0&&u.pakanKg>0?u.pakanKg/pKg:null;
+ const fcrAkhir=pKg>0&&DB.pakanKg>0?DB.pakanKg/pKg:null;
  return `<div class="hero" style="min-height:0;padding:20px 22px"><div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start"><div><h2 style="font-size:22px">${h?h.barnName:'Batch '+c.code} ${stBadge(c.stage==='HARVEST'?'PANEN':'AKTIF')}</h2><div class="meta" style="font-weight:500;gap:6px">Batch ${c.code} · ${c.breed} · DOD masuk ${fmtDate(c.dodDate)}</div></div>${kelola?`<button class="btn sm" data-act="modal" data-m="cycle-target">Ubah Target</button>`:''}</div>
   <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-top:14px"><div><b style="font-size:20px">Hari ke-${d}</b><small style="display:block;color:var(--muted)">dari ${c.targetDays} hari</small></div><div><b class="num" style="font-size:20px">${num(hidup)}</b><small style="display:block;color:var(--muted)">ekor hidup</small></div><div><b class="num" style="font-size:20px">${teksTarget()} kg</b><small style="display:block;color:var(--muted)">target bobot panen</small></div><div><b style="font-size:20px">${fmtDate(dateOfDay(c.targetDays))}</b><small style="display:block;color:var(--muted)">perkiraan panen</small></div></div></div>
  ${kerja}
  <p class="nav-sec" style="padding:18px 2px 8px">Angka batch ini</p>
- <div class="grid g-kpi"><div class="card flat"><b class="num" style="font-size:20px">${num(u.pakanKg||0,1)} kg</b><small style="display:block;color:var(--muted)">pakan terpakai</small></div><div class="card flat"><b class="num" style="font-size:20px">${h&&h.fcr!=null?num(h.fcr,2):(fcrAkhir!=null?num(fcrAkhir,2):'—')}</b><small style="display:block;color:var(--muted)">FCR ${h&&h.fcr!=null?'terbaru':fcrAkhir!=null?'akhir':'(setelah timbang)'}</small></div><div class="card flat"><b class="num" style="font-size:20px">${num(mati)} ekor</b><small style="display:block;color:var(--muted)">mati · ${pct(c.dodQty?mati/c.dodQty*100:0)}</small></div><div class="card flat"><b class="num" style="font-size:20px">${h&&h.bobot!=null?num(h.bobot,2)+' kg':'—'}</b><small style="display:block;color:var(--muted)">bobot terakhir</small></div></div>
+ <div class="grid g-kpi"><div class="card flat"><b class="num" style="font-size:20px">${num(DB.pakanKg||0,1)} kg</b><small style="display:block;color:var(--muted)">pakan terpakai</small></div><div class="card flat"><b class="num" style="font-size:20px">${h&&h.fcr!=null?num(h.fcr,2):(fcrAkhir!=null?num(fcrAkhir,2):'—')}</b><small style="display:block;color:var(--muted)">FCR ${h&&h.fcr!=null?'terbaru':fcrAkhir!=null?'akhir':'(setelah timbang)'}</small></div><div class="card flat"><b class="num" style="font-size:20px">${num(mati)} ekor</b><small style="display:block;color:var(--muted)">mati · ${pct(c.dodQty?mati/c.dodQty*100:0)}</small></div><div class="card flat"><b class="num" style="font-size:20px">${h&&h.bobot!=null?num(h.bobot,2)+' kg':'—'}</b><small style="display:block;color:var(--muted)">bobot terakhir</small></div></div>
 
  <p class="nav-sec" style="padding:18px 2px 8px">Perkembangan FCR (ter-update tiap timbang)</p>
  <div class="card">${seri.length?`<div class="tbl-wrap"><table><thead><tr><th>Tanggal timbang</th><th class="r">Umur</th><th class="r">Ekor hidup</th><th class="r">Bobot rata-rata</th><th class="r">Pakan terpakai</th><th class="r">FCR</th></tr></thead><tbody>${seri.map(x=>`<tr><td>${fmtDate(toDate(x.date))}</td><td class="r num">${x.umur} hari</td><td class="r num">${num(x.pop)}</td><td class="r num">${num(x.bobot,2)} kg</td><td class="r num">${num(x.pakan,1)} kg</td><td class="r num"><b>${x.fcr!=null?num(x.fcr,2):'—'}</b></td></tr>`).join('')}</tbody></table></div><small style="display:block;margin-top:8px;color:var(--dim)">FCR = pakan terpakai ÷ pertambahan bobot hidup kandang${c.dodWeight>0?'':' (bobot DOD tidak diisi, jadi tidak dikurangkan)'}.</small>`:'<div class="alert info">Belum ada timbangan. FCR muncul di sini setiap kali sampel ditimbang.</div>'}</div>
@@ -265,9 +416,11 @@ function halamanKandang(){const c=DB.cycle;if(!c)return '';
  <div class="card"><div class="card-h"><h3>${panen.length?`${num(pEkor)} ekor · ${num(pKg,1)} kg`:'Belum ada panen'}</h3>${kelola&&hidup>0?`<button class="btn primary sm" data-act="modal" data-m="harvest" data-id="${h?h.barn:''}">${ic('plus',14)} Catat Panen</button>`:''}</div>
  ${panen.length?`<div class="tbl-wrap"><table><thead><tr><th>Tanggal</th><th>Pengambil</th><th class="r">Ekor</th><th class="r">Total kg</th><th class="r">Rata-rata</th><th class="r">Harga/kg</th><th class="r">Uang masuk</th><th>Bayar</th><th></th></tr></thead><tbody>${panen.map(x=>`<tr><td>${fmtDate(toDate(x.date))}</td><td>${esc(x.pembeli)}</td><td class="r num">${num(x.qty)}</td><td class="r num">${num(x.kg,1)} kg</td><td class="r num">${num(x.kg/x.qty,2)} kg</td><td class="r num">${rp(x.harga)}</td><td class="r num"><b>${rp(x.total)}</b></td><td>${badge(x.pay==='PAID'?'ok':x.pay==='DP'?'gold':'warn',x.pay==='PAID'?'LUNAS':x.pay==='DP'?'DP':'BELUM')}</td><td><button class="btn sm" data-act="modal" data-m="invoice" data-id="${x.code}">Invoice</button></td></tr>`).join('')}<tr><td><b>Total</b></td><td></td><td class="r num"><b>${num(pEkor)}</b></td><td class="r num"><b>${num(pKg,1)} kg</b></td><td class="r num"><b>${num(pKg/pEkor,2)} kg</b></td><td></td><td class="r num"><b>${rp(u.panen||0)}</b></td><td></td><td></td></tr></tbody></table></div>`:'<div class="alert info">Hasil panen muncul di sini: tanggal, pengambil, timbangan, harga, dan invoice-nya.</div>'}</div>
 
- <p class="nav-sec" style="padding:18px 2px 8px">Uang batch ini</p>
- <div class="card"><div class="kv" style="grid-template-columns:1fr auto;row-gap:10px"><span>Uang masuk dari panen</span><b class="num">${rp(u.panen||0)}</b><span>Modal DOD · ${num(c.dodQty)} × ${rp(c.dodPrice)}</span><b class="num">− ${rp(u.dod||0)}</b><span>Biaya pakan · ${num(u.pakanKg||0,1)} kg, harga dari nota per jenis</span><b class="num">− ${rp(u.pakan||0)}</b><span>Biaya lain yang dicatat untuk batch ini</span><b class="num">− ${rp(u.lain||0)}</b><span><b style="font-size:15px;color:var(--text)">${(u.laba||0)>=0?'Laba':'Rugi'} batch${panen.length?'':' (belum ada panen)'}</b></span><b class="num" style="font-size:20px;color:${(u.laba||0)>=0?'var(--soft)':'#F29390'}">${rp(Math.abs(u.laba||0))}</b></div>
- ${panen.length?`<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-top:14px"><div><b class="num" style="font-size:17px">${rp((u.laba||0)/pEkor)}</b><small style="display:block;color:var(--muted)">${(u.laba||0)>=0?'laba':'rugi'} per ekor dipanen</small></div><div><b class="num" style="font-size:17px">${rp(((u.dod||0)+(u.pakan||0)+(u.lain||0))/pKg)}</b><small style="display:block;color:var(--muted)">biaya per kg bobot hidup</small></div><div><b class="num" style="font-size:17px">${fcrAkhir!=null?num(fcrAkhir,2):'—'}</b><small style="display:block;color:var(--muted)">FCR dari panen</small></div><div><b class="num" style="font-size:17px">${pct(c.dodQty?mati/c.dodQty*100:0)}</b><small style="display:block;color:var(--muted)">mortalitas</small></div></div>`:''}</div>
+ ${can('finance')?`<p class="nav-sec" style="padding:18px 2px 8px">Uang batch ini</p>
+ <div class="card"><div class="kv" style="grid-template-columns:1fr auto;row-gap:10px"><span>Uang masuk dari panen</span><b class="num">${rp(u.panen||0)}</b><span>Modal DOD · ${num(c.dodQty)} × ${rp(c.dodPrice)}</span><b class="num">− ${rp(u.dod||0)}</b><span>Biaya pakan · ${num(DB.pakanKg||0,1)} kg, harga dari nota per jenis</span><b class="num">− ${rp(u.pakan||0)}</b><span>Biaya lain yang dicatat untuk batch ini</span><b class="num">− ${rp(u.lain||0)}</b><span><b style="font-size:15px;color:var(--text)">${(u.laba||0)>=0?'Laba':'Rugi'} batch${panen.length?'':' (belum ada panen)'}</b></span><b class="num" style="font-size:20px;color:${(u.laba||0)>=0?'var(--soft)':'#F29390'}">${rp(Math.abs(u.laba||0))}</b></div>
+ ${panen.length?`<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-top:14px"><div><b class="num" style="font-size:17px">${rp((u.laba||0)/pEkor)}</b><small style="display:block;color:var(--muted)">${(u.laba||0)>=0?'laba':'rugi'} per ekor dipanen</small></div><div><b class="num" style="font-size:17px">${rp(((u.dod||0)+(u.pakan||0)+(u.lain||0))/pKg)}</b><small style="display:block;color:var(--muted)">biaya per kg bobot hidup</small></div><div><b class="num" style="font-size:17px">${fcrAkhir!=null?num(fcrAkhir,2):'—'}</b><small style="display:block;color:var(--muted)">FCR dari panen</small></div><div><b class="num" style="font-size:17px">${pct(c.dodQty?mati/c.dodQty*100:0)}</b><small style="display:block;color:var(--muted)">mortalitas</small></div></div>`:''}</div>`:''}
+
+ ${can('finance')?kartuHppBep():''}
 
  <p class="nav-sec" style="padding:18px 2px 8px">Biaya tambahan (opsional)</p>
  <div class="card"><div class="card-h"><h3>${(DB.biaya||[]).length?rp((DB.biaya||[]).filter(e=>e.status==='APPROVED').reduce((t,e)=>t+e.jumlah,0)):'Belum ada biaya tambahan'}</h3>${h&&(kelola||ak||role==='ADMIN')?`<button class="btn sm" data-act="modal" data-m="biaya" data-id="${h.barn}">${ic('plus',14)} Catat biaya</button>`:''}</div>
@@ -396,7 +549,7 @@ function pgSiklus(){const c=DB.cycle;const d=calc.day();const s=calc.sum();const
   ${DB.prevCycles.map(p=>`<tr><td><b>${p.code}</b><br><small style="color:var(--dim)">${p.breed||'—'}</small></td><td class="num">${num(p.dodQty)}</td><td>${fmtDate(p.dodDate)}</td><td class="r num">${p.days??'—'}</td><td class="r num">${num(p.harvestQty||0)}</td><td class="r num">${p.harvestKg?num(p.harvestKg,1)+' kg':'—'}</td><td class="r num">${p.harvestAvgKg?num(p.harvestAvgKg,2)+' kg':'—'}</td><td class="r num">${p.fcr!=null?num(p.fcr,3):'—'}</td><td class="r num">${p.mortPct!=null?num(p.mortPct,2)+'%':'—'}</td>${can('finance')?`<td class="r num">${p.revenue!=null?rp(p.revenue):'—'}</td><td class="r num">${p.profit!=null?rp(p.profit):'—'}</td>`:''}<td>${stBadge(p.status)}${p.carriedOut?`<br><small style="color:var(--dim)">${num(p.carriedOut)} ekor dibawa keluar</small>`:''}</td></tr>`).join('')}
   ${!DB.prevCycles.length?`<tr><td colspan="${can('finance')?12:10}" style="color:var(--dim);text-align:center;padding:18px">Belum ada siklus yang ditutup. Riwayat akan muncul di sini setelah siklus pertama selesai.</td></tr>`:''}</tbody></table></div></div>`:
 
- `<div class="grid g-2"><div class="card"><div class="card-h"><h3>Siklus ${c.code} · ${c.breed}</h3>${stBadge(c.stage==='HARVEST'?'PANEN':'AKTIF')}</div><div class="kv" style="grid-template-columns:auto 1fr;row-gap:10px"><span>Tanggal DOD</span><b>${fmtLong(c.dodDate)}</b><span>Jumlah DOD</span><b class="num">${num(c.dodQty)} ekor</b><span>Harga DOD</span><b class="num">${rp(c.dodPrice)}/ekor</b><span>Modal DOD</span><b class="num">${rp(c.dodQty*c.dodPrice)}</b><span>Target panen</span><b>${tgt} hari · ${fmtLong(dateOfDay(tgt))}</b><span>Target bobot</span><b class="num">${num(c.targetWeight[0],1)}–${num(c.targetWeight[1],1)} kg</b><span>Target mortalitas</span><b>&lt; ${c.targetMort}%</b><span>Kandang</span><b>${barnsWorking().map(b=>`${b.name} (${num(calc.population(b.id))} ekor)`).join(', ')||'—'}</b><span>Dibuat oleh</span><b>${userName(c.createdBy)} · ${fmtDT(c.createdAt||c.dodDate)} ${badge('neutral','TERKUNCI')}</b></div>
+ `<div class="grid g-2"><div class="card"><div class="card-h"><h3>Siklus ${c.code} · ${c.breed}</h3>${stBadge(c.stage==='HARVEST'?'PANEN':'AKTIF')}</div><div class="kv" style="grid-template-columns:auto 1fr;row-gap:10px"><span>Tanggal DOD</span><b>${fmtLong(c.dodDate)}</b><span>Jumlah DOD</span><b class="num">${num(c.dodQty)} ekor</b>${can('finance')?`<span>Harga DOD</span><b class="num">${rp(c.dodPrice)}/ekor</b><span>Modal DOD</span><b class="num">${rp(c.dodQty*c.dodPrice)}</b>`:''}<span>Target panen</span><b>${tgt} hari · ${fmtLong(dateOfDay(tgt))}</b><span>Target bobot</span><b class="num">${num(c.targetWeight[0],1)}–${num(c.targetWeight[1],1)} kg</b><span>Target mortalitas</span><b>&lt; ${c.targetMort}%</b><span>Kandang</span><b>${barnsWorking().map(b=>`${b.name} (${num(calc.population(b.id))} ekor)`).join(', ')||'—'}</b><span>Dibuat oleh</span><b>${userName(c.createdBy)} · ${fmtDT(c.createdAt||c.dodDate)} ${badge('neutral','TERKUNCI')}</b></div>
   <div class="alert info" style="margin-top:14px">${ic('lock',16)}<div><b>Jumlah & harga DOD terkunci</b>Perubahan hanya lewat "Ajukan Koreksi" dengan bukti surat jalan dan persetujuan Owner.</div></div></div>
   <div class="card"><div class="card-h"><h3>Timeline Siklus</h3><span class="sub">Hari ke-${d} dari ${tgt}</span></div><div class="stage">${stages.map(([n,a,b])=>`<div class="${d>b?'done':d>=a?'now':''}">${n}<small>H${a}${b>a?'–'+b:''}</small></div>`).join('')}</div>
   <div class="timeline" style="margin-top:18px">${[
@@ -427,6 +580,9 @@ function feedVersions(r){if(!r.versions.length)return '';return `<div style="mar
 function pgPakan(){const fd=calc.feedDiff();const tab=state.tab||'riwayat';const purchased=calc.feedPurchased();
  return pageHead('Pakan','Stok pakan dihitung dari transaksi: pembelian − pemakaian ± penyesuaian. Selisih dengan opname fisik selalu ditampilkan.',`${state.user.role!=='ANAK_KANDANG'?`<button class="btn" data-act="modal" data-m="opname">${ic('scale',14)} Stock Opname</button>`:''}${['OWNER','MANAGER'].includes(state.user.role)&&DB.cycle?`<button class="btn" data-act="modal" data-m="feed-use">${ic('feed',14)} Catat Pakan Keluar</button>`:''}${can('inputPurchase')||can('masterData')?`<button class="btn primary" data-act="modal" data-m="purchase">${ic('plus',14)} Pembelian Pakan</button>`:''}`)+kartuPakanHarian()+kartuHargaJenis()+
  `<div class="grid g-kpi" style="margin-bottom:14px">${kpi('Stok Awal Siklus','0','kg','Siklus #000 habis terpakai','','box')}${kpi('Pembelian',num(purchased),'kg',`${DB.feedPurchases.filter(p=>p.status==='APPROVED').length} transaksi disetujui`,'','truck')}${kpi('Pemakaian',num(calc.feedTotal()),'kg',`Rata-rata ${num(calc.feedAvg7(),0)} kg/hari (7 hari)`,'','feed')}${kpi('Penyesuaian',num(calc.feedAdjusted()),'kg',DB.feedAdjust.length?'Disetujui':'Belum ada','','pen')}${kpi('Stok Teoritis',num(calc.feedStockTheory()),'kg',`Cukup ${num(calc.feedDaysLeft(),0)} hari`,calc.stokKritis()?'down':'up','box','gold')}${fd?kpi('Stok Fisik (Opname)',num(fd.op.physical),'kg',`Selisih ${num(fd.diff)} kg · ${fmtDate(fd.op.date)}`,Math.abs(fd.diff)>=10?'warn':'up','scale',Math.abs(fd.diff)>=10?'red':''):''}</div>
+ ${(()=>{const c=calc.feedCatatan7();return c.dari>0&&!c.lengkap?`<div class="alert warn" style="margin-bottom:14px">${ic('alert',18)}<div><b>Pencatatan pakan belum lengkap \u2014 baru ${c.dicatat} dari ${c.dari} hari terakhir</b>
+  Rata-rata 7 hari di bawah dihitung dari ${c.dicatat} hari yang ada catatannya saja, bukan dibagi ${c.dari}. ${c.kosong} hari tanpa catatan TIDAK dihitung sebagai nol \u2014 kalau dihitung nol, angkanya akan terlihat lebih bagus dari kenyataan.
+  Lengkapi catatan pakan supaya rata-rata, FCR, dan perkiraan stok bisa dipercaya.</div></div>`:''})()}
  ${fd&&Math.abs(fd.diff)>=10?`<div class="alert warn" style="margin-bottom:14px">${ic('alert',18)}<div style="flex:1"><b>Selisih stok pakan ${num(Math.abs(fd.diff))} kg — PERLU VERIFIKASI</b>Stok teoritis per ${fmtDT(fd.op.date)} adalah ${num(fd.theory)} kg, opname fisik ${num(fd.op.physical)} kg. Selisih ini bukan tuduhan; bisa berasal dari tumpahan, karung tidak penuh, atau input yang belum tercatat. Verifikasi lalu ajukan penyesuaian stok dengan bukti.</div>${can('approve')?`<button class="btn sm" data-act="modal" data-m="adjust">Ajukan penyesuaian</button>`:''}</div>`:''}
  <div class="grid g-2" style="margin-bottom:14px">${chartCard('Konsumsi Pakan Harian','ch-feed',rangeSeg(),'','Hari ini '+num(calc.feedToday())+' kg vs rata-rata 7 hari '+num(calc.feedAvg7(),1)+' kg')}<div class="card"><div class="card-h"><h3>FCR Transparan</h3></div>${(()=>{const f=calc.fcr();return f?`<div class="kv" style="row-gap:10px"><span>Total pakan</span><b class="num">${num(f.feed)} kg</b><span>Biomassa sekarang</span><b class="num">${num(calc.population())} ekor × ${num(calc.avgWeight(),2)} kg = ${num(calc.population()*calc.avgWeight(),1)} kg</b><span>Biomassa awal (DOD)</span><b class="num">${DB.cycle.dodQty} × ${num(calc.bobotDod(),3)} kg = ${num(DB.cycle.dodQty*calc.bobotDod(),1)} kg</b><span>Pertambahan biomassa</span><b class="num">${num(f.bio,1)} kg</b><span>FCR</span><b class="num" style="font-size:22px;color:var(--gold)">${num(f.feed)} ÷ ${num(f.bio,1)} = ${num(f.fcr,2)}</b></div><div class="chart-box sm" style="margin-top:10px"><canvas id="ch-fcr"></canvas></div>`:(calc.bobotDod()==null?`<div class="alert warn">${ic('alert',16)}<div><b>Bobot DOD belum diatur</b>FCR tidak bisa dihitung tanpa bobot DOD saat masuk. Isi di Pengaturan \u2192 Master Data, ditimbang sendiri atau diambil dari nota.</div></div>`:'<div class="alert info">Data belum cukup untuk menghitung FCR.</div>');})()}</div></div>
  <div class="tabs"><button class="${tab==='riwayat'?'active':''}" data-act="tab" data-v="riwayat">Riwayat Pemakaian</button><button class="${tab==='beli'?'active':''}" data-act="tab" data-v="beli">Pembelian</button><button class="${tab==='opname'?'active':''}" data-act="tab" data-v="opname">Opname & Penyesuaian</button></div>
@@ -453,11 +609,22 @@ function pgKesehatan(){const list=DB.health.filter(h=>state.barn==='ALL'||h.barn
 
 function pgKeuangan(){if(!can('finance'))return denied();const c=calc.costByCat();const tab=state.tab||'biaya';
  return pageHead('Keuangan','Semua biaya terikat ke siklus dengan vendor, nomor bukti, foto nota, dan status approval.',`<button class="btn" data-act="export" data-what="Laporan Keuangan" data-fmt="CSV">${ic('dl',14)} Unduh CSV</button><button class="btn" data-act="export" data-what="Laporan Keuangan" data-fmt="CETAK">${ic('dl',14)} Cetak / PDF</button>`)+
- `<div class="grid g-kpi" style="margin-bottom:14px">${kpi('Modal Berjalan',rp(calc.modal()),'',(DB.cycle?'Biaya disetujui siklus '+DB.cycle.code:'Biaya disetujui'),'','money','gold')}${kpi('Omzet Realisasi',rp(DB.orders.filter(o=>o.pay==='PAID').reduce((s,o)=>s+calc.orderTotal(o),0)),'','Penjualan yang sudah dibayar','','cart','gold')}${kpi('Estimasi Omzet Panen',rp(calc.estRevenue()),'',`${num(calc.projectedPop())} ekor × ~${num(calc.targetBobot(),2)} kg × ${rp(calc.livePrice())}/kg`,'','growth','gold')}${kpi('Estimasi Laba',rpAtau(calc.estProfit()),'',`ROI ${pctAtau(calc.roi())} · HPP ${rpAtau(calc.projectedPop()>0?(calc.modal()+calc.projectedRemainingCost())/calc.projectedPop():null)}/ekor`,calc.estProfit()==null?'':calc.estProfit()>0?'up':'down','money','gold')}</div>
+ `<div class="grid g-kpi" style="margin-bottom:14px">${kpi('Modal Berjalan',rp(calc.modal()),'',(DB.cycle?'Biaya disetujui siklus '+DB.cycle.code:'Biaya disetujui'),'','money','gold')}${kpi('Omzet Realisasi',rp(DB.orders.filter(o=>o.pay==='PAID').reduce((s,o)=>s+calc.orderTotal(o),0)),'','Penjualan yang sudah dibayar','','cart','gold')}${kpi('Estimasi Omzet Panen',rp(calc.estRevenue()),'',`${num(calc.projectedPop())} ekor × ~${num(calc.targetBobot(),2)} kg × ${rp(calc.livePrice())}/kg`,'','growth','gold')}${kpi('Estimasi Laba',rpAtau(calc.estProfit()),'',`ROI ${pctAtau(calc.roi())}`,calc.estProfit()==null?'':calc.estProfit()>0?'up':'down','money','gold')}
+ ${(()=>{const hk=calc.hppKg(),he=calc.hppEkor();const j=(hk||he||{}).jenis;
+   const tag=j==='final'?'final':j==='sebagian'?'proyeksi, panen sebagian':'proyeksi';
+   const kurang=calc.kurangDataProyeksi();
+   return kpi('HPP per kg',rpAtau(hk&&hk.nilai),'',hk?`${tag} · per ekor ${rpAtau(he&&he.nilai)}`:(kurang.length?'PERLU DATA: '+kurang[0]:'butuh panen atau target bobot'),'','money','gold')
+        + kpi('BEP harga jual',rpAtau(hk&&hk.nilai),'',hk?`${tag} · di bawah ini rugi`:(kurang.length?'PERLU DATA: '+kurang[0]:'butuh panen atau target bobot'),'','growth','gold');})()}</div>
  <div class="grid g-2" style="margin-bottom:14px">${chartCard('Biaya per Kategori','ch-cost')}${chartCard('Biaya, Omzet & Proyeksi Laba','ch-fin',rangeSeg(),'','kumulatif')}</div>
  <div class="tabs"><button class="${tab==='biaya'?'active':''}" data-act="tab" data-v="biaya">Daftar Biaya</button><button class="${tab==='laba'?'active':''}" data-act="tab" data-v="laba">Proyeksi Laba Rugi</button></div>
- ${tab==='biaya'?`<div class="card"><div class="tbl-wrap"><table><thead><tr><th>Tanggal</th><th>Kategori</th><th class="r">Nominal</th><th>Vendor</th><th>No. Bukti</th><th>Nota</th><th>User</th><th>Status</th></tr></thead><tbody>${[...DB.expenses.map(e=>({...e,kind:'E'})),...DB.feedPurchases.map(p=>({id:p.id,date:p.date,cat:'Pakan',amount:p.qty*p.price,vendor:p.vendor,ref:p.ref,user:p.user,status:p.status,kind:'P'}))].sort((a,b)=>b.date-a.date).map(e=>`<tr><td>${fmtDate(e.date)}</td><td>${badge(e.cat==='DOD'?'gold':e.cat==='Pakan'?'ok':'info',e.cat.toUpperCase())}</td><td class="r num"><b>${rp(e.amount)}</b></td><td>${e.vendor}</td><td><code style="font-size:11px">${e.ref}</code></td><td>${photoChip('nota')}</td><td>${userName(e.user)}</td><td>${stBadge(e.status)}</td></tr>`).join('')}</tbody></table></div></div>`:
- `<div class="card"><div class="card-h"><h3>Proyeksi Laba Rugi Siklus ${DB.cycle.code}</h3></div><div class="tbl-wrap"><table><tbody>${Object.entries(c).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<tr><td>Biaya ${k}</td><td class="r num">${rp(v)}</td><td class="r num" style="color:var(--dim)">${pct(v/calc.modal()*100)}</td></tr>`).join('')}<tr style="background:rgba(255,255,255,.04)"><td><b>Total modal berjalan</b></td><td class="r num"><b>${rp(calc.modal())}</b></td><td></td></tr><tr><td>Proyeksi biaya sisa siklus (${DB.cycle.targetDays-calc.day()} hari)</td><td class="r num">${rp(calc.projectedRemainingCost())}</td><td></td></tr><tr><td>Estimasi omzet panen</td><td class="r num" style="color:var(--soft)">${rp(calc.estRevenue())}</td><td></td></tr><tr style="background:rgba(198,161,91,.1)"><td><b>Estimasi laba</b></td><td class="r num"><b style="color:var(--gold);font-size:16px">${rpAtau(calc.estProfit())}</b></td><td class="r num">ROI ${pctAtau(calc.roi())}</td></tr></tbody></table></div><p style="color:var(--muted);font-size:12px;margin-top:10px">Asumsi: harga jual hidup ${rp(calc.livePrice())}/kg, bobot panen ~${num(calc.targetBobot(),2)} kg, mortalitas berlanjut pada laju saat ini. Semua asumsi dapat diubah di Pengaturan → Master Data.</p></div>`}
+ ${tab==='biaya'?`<div class="card"><div class="tbl-wrap"><table><thead><tr><th>Tanggal</th><th>Kategori</th><th class="r">Nominal</th><th>Vendor</th><th>No. Bukti</th><th>Nota</th><th>User</th><th>Status</th></tr></thead><tbody>${DB.expenses.map(e=>({...e,kind:'E'})).sort((a,b)=>b.date-a.date).map(e=>`<tr><td>${fmtDate(e.date)}</td><td>${badge(e.cat==='DOD'?'gold':e.cat==='Pakan'?'ok':'info',e.cat.toUpperCase())}</td><td class="r num"><b>${rp(e.amount)}</b></td><td>${e.vendor}</td><td><code style="font-size:11px">${e.ref}</code></td><td>${photoChip('nota')}</td><td>${userName(e.user)}</td><td>${stBadge(e.status)}</td></tr>`).join('')}</tbody></table></div>
+  <div class="alert info" style="margin:14px">${ic('money',16)}<div><b>Biaya DOD dan pakan tidak muncul sebagai baris di sini</b>Keduanya tidak dicatat sebagai "biaya", melainkan dihitung sendiri: DOD dari jumlah x harga bibit batch ini, pakan dari yang benar-benar dimakan batch ini dikali harga nota per jenis. Rinciannya ada di tab Proyeksi Laba Rugi.</div></div></div>
+  <div class="card" style="margin-top:14px"><div class="card-h"><h3>Pembelian pakan farm</h3><span class="sub">stok gudang, bukan biaya satu batch</span></div>
+   <div class="alert info" style="margin-bottom:14px">${ic('duck',16)}<div><b>Kenapa dipisah</b>Pakan dibeli untuk stok farm, lalu dipakai oleh banyak batch. Kalau pembelian dibebankan ke batch yang sedang dibuka, batch itu menanggung pakan batch lain. Yang dibebankan ke batch adalah pakan yang benar-benar dimakannya.</div></div>
+   ${DB.feedPurchases.length?`<div class="tbl-wrap"><table><thead><tr><th>Tanggal</th><th class="r">Jumlah</th><th class="r">Harga/kg</th><th class="r">Nilai</th><th>Vendor</th><th>No. Nota</th><th>Status</th></tr></thead><tbody>${DB.feedPurchases.slice().sort((a,b)=>b.date-a.date).map(p=>`<tr><td>${fmtDate(p.date)}</td><td class="r num">${num(p.qty,1)} kg</td><td class="r num">${p.price?rp(p.price):'—'}</td><td class="r num"><b>${p.price?rp(p.qty*p.price):'—'}</b></td><td>${esc(p.vendor||'—')}</td><td><code style="font-size:11px">${esc(p.ref||'—')}</code></td><td>${stBadge(p.status)}</td></tr>`).join('')}<tr style="background:rgba(255,255,255,.04)"><td><b>Total dibeli</b></td><td class="r num"><b>${num(calc.feedPurchased(),1)} kg</b></td><td></td><td class="r num"><b>${rp(calc.pembelianPakanFarm())}</b></td><td colspan="3"></td></tr></tbody></table></div>`:emptyState('Belum ada pembelian pakan','Pembelian dicatat di halaman Stok & Gudang.')}
+  </div>
+  ${kartuRiwayatHargaPakan()}`:
+ `<div class="card"><div class="card-h"><h3>Proyeksi Laba Rugi Siklus ${DB.cycle.code}</h3></div><div class="tbl-wrap"><table><tbody>${Object.entries(c).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<tr><td>Biaya ${k}</td><td class="r num">${rp(v)}</td><td class="r num" style="color:var(--dim)">${pct(v/calc.modal()*100)}</td></tr>`).join('')}<tr style="background:rgba(255,255,255,.04)"><td><b>Total modal berjalan</b></td><td class="r num"><b>${rp(calc.modal())}</b></td><td></td></tr><tr><td>Proyeksi biaya sisa siklus (${DB.cycle.targetDays-calc.day()} hari)</td><td class="r num">${rp(calc.projectedRemainingCost())}</td><td></td></tr><tr><td>Estimasi omzet panen</td><td class="r num" style="color:var(--soft)">${rp(calc.estRevenue())}</td><td></td></tr><tr style="background:rgba(198,161,91,.1)"><td><b>Estimasi laba</b></td><td class="r num"><b style="color:var(--gold);font-size:16px">${rpAtau(calc.estProfit())}</b></td><td class="r num">ROI ${pctAtau(calc.roi())}</td></tr></tbody></table></div><p style="color:var(--muted);font-size:12px;margin-top:10px">Asumsi: harga jual hidup ${rp(calc.livePrice())}/kg (dari harga produk di Penjualan), bobot panen ~${num(calc.targetBobot(),2)} kg dan target ${DB.cycle.targetDays} hari (diisi di Batch Baru), mortalitas berlanjut pada laju saat ini. Modal berjalan dibaca dari ringkasan siklus di server, bukan dihitung ulang di layar.</p></div>`}
  `;}
 
 function ordersTable(list){return list.length?`<div class="tbl-wrap"><table><thead><tr><th>No. Order</th><th>Tanggal</th><th>Customer</th><th>Produk</th><th class="r">Jumlah</th><th class="r">Berat</th>${can('finance')?'<th class="r">Total</th>':''}<th>Bayar</th><th>Kirim</th><th>Status</th><th>Sumber</th><th></th></tr></thead><tbody>${list.map(o=>{const p=DB.products.find(x=>x.id===o.product);const cu=DB.customers.find(x=>x.id===o.customer);return `<tr><td><b>${o.id}</b></td><td class="num">${fmtDT(o.date)}</td><td>${cu.name}<br><small style="color:var(--dim)">${cu.phone}</small></td><td>${p.name.replace('Bebek Peking ','')}</td><td class="r num">${o.qty} ekor</td><td class="r num">${o.weight?num(o.weight,1)+' kg':'<span style="color:var(--dim)">est. '+num(o.qty*p.avgW,1)+' kg</span>'}</td>${can('finance')?`<td class="r num"><b>${rp(calc.orderTotal(o))}</b></td>`:''}<td>${stBadge(o.pay)}</td><td>${stBadge(o.ship)}</td><td>${stBadge(o.status)}</td><td>${badge(o.source==='WEBSITE'?'gold':'neutral',o.source)}</td><td>${o.status==='NEW'&&(can('inputSales')||can('approve'))?`<button class="btn primary sm" data-act="order-status" data-id="${o.id}" data-s="CONFIRMED">Konfirmasi</button>`:o.status==='CONFIRMED'&&(can('inputSales')||can('approve'))?`<button class="btn sm" data-act="order-status" data-id="${o.id}" data-s="PAID">Tandai dibayar</button>`:o.status==='PAID'&&(can('inputSales')||can('approve'))?`<button class="btn sm" data-act="order-status" data-id="${o.id}" data-s="DELIVERED">Tandai terkirim</button>`:''}</td></tr>`;}).join('')}</tbody></table></div>`:emptyState('Belum ada order','Order dari admin atau website akan tampil di sini.');}

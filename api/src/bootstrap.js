@@ -5,6 +5,7 @@
  * Data keuangan disaring sesuai role di sini (bukan hanya di UI).
  */
 import { rows, one, config } from './db.js';
+import { sensorRupiah } from './sensor.js';
 
 const finRoles = new Set(['OWNER', 'ADMIN']);
 
@@ -166,9 +167,11 @@ export async function buildBootstrap(user, batchCode) {
     one(`
     SELECT (c.dod_qty * c.dod_price) AS dod,
       COALESCE((SELECT SUM(oi.weight_kg * oi.price_per_kg) FROM order_item oi JOIN "order" o ON o.id=oi.order_id WHERE oi.cycle_id=c.id AND o.source::text='PANEN' AND o.status<>'CANCELLED'),0) AS panen,
-      COALESCE((SELECT SUM(-t.qty_kg * COALESCE(hj.harga_kg,(SELECT harga_kg FROM v_harga_pakan_rata))) FROM feed_transaction t JOIN feed f ON f.id=t.feed_id LEFT JOIN v_harga_pakan_jenis hj ON hj.jenis=f.type::text
-                 WHERE t.cycle_id=c.id AND t.type='USAGE' AND t.status IN ('RECORDED','APPROVED') AND t.deleted_at IS NULL),0) AS pakan,
-      COALESCE((SELECT -SUM(t.qty_kg) FROM feed_transaction t WHERE t.cycle_id=c.id AND t.type='USAGE' AND t.status IN ('RECORDED','APPROVED') AND t.deleted_at IS NULL),0) AS pakan_kg,
+      -- Biaya pakan dibaca dari v_cycle_pakan, sumber yang sama dengan
+      -- v_cycle_cost. Dulu rumusnya ditulis ulang di sini dan sempat berbeda,
+      -- sehingga rincian biaya di layar tidak berjumlah sama dengan totalnya.
+      COALESCE((SELECT biaya FROM v_cycle_pakan vp WHERE vp.cycle_id=c.id),0) AS pakan,
+      COALESCE((SELECT kg FROM v_cycle_pakan vp WHERE vp.cycle_id=c.id),0) AS pakan_kg,
       COALESCE((SELECT SUM(e.amount) FROM expense e WHERE e.cycle_id=c.id AND e.status='APPROVED' AND e.deleted_at IS NULL),0) AS lain
     FROM cycle c WHERE c.id=$1`, [cycle.id]),
     rows(`
@@ -190,7 +193,10 @@ export async function buildBootstrap(user, batchCode) {
     feedRecords.push({ id: f.id, rootId: root.id, date: f.occurred_at, barn: bcode[f.barn_id], jenis: f.jenis, sesi: f.sesi, kg: -Number(root.qty_kg), user: root.created_by, photo: f.photo || root.photo, photoSource: f.photo_source || root.photo_source, status: f.status, locked: f.locked,
       versions: chain.map(v => ({ id: v.id, kg: -Number(v.qty_kg), reason: v.reason || 'Koreksi', approvedBy: v.updated_by || v.created_by, date: v.created_at })) });
   });
-  const feedPurchases = feedAll.filter(f => f.type === 'PURCHASE').map(p => ({ id: p.id, date: p.occurred_at, qty: Number(p.qty_kg), price: fin ? Number(p.price_per_kg) : null, vendor: p.vendor, ref: p.ref_no, user: p.created_by, status: p.status, locked: p.locked, note: p.reason }));
+  // `jenis` ikut dikirim supaya layar bisa menampilkan riwayat harga per jenis pakan
+  // dan memakai harga nota TERBARU untuk proyeksi. Kolomnya sudah diambil query di
+  // atas; tidak ada query, tabel, atau view baru.
+  const feedPurchases = feedAll.filter(f => f.type === 'PURCHASE').map(p => ({ id: p.id, date: p.occurred_at, qty: Number(p.qty_kg), price: fin ? Number(p.price_per_kg) : null, jenis: p.jenis, vendor: p.vendor, ref: p.ref_no, user: p.created_by, status: p.status, locked: p.locked, note: p.reason }));
   const feedAdjust = feedAll.filter(f => f.type === 'ADJUSTMENT' && f.status === 'APPROVED').map(a => ({ id: a.id, date: a.occurred_at, qty: Number(a.qty_kg), reason: a.reason, user: a.created_by }));
 
   const anomalyState = {};
@@ -205,7 +211,9 @@ export async function buildBootstrap(user, batchCode) {
     master: {
       // Harga pakan yang BENAR-BENAR dibayar, rata-rata tertimbang dari nota pembelian.
       // Tidak ada harga isian: harga DOD dan pakan diketik dari nota tiap pembelian.
-      hargaPakanRata: +(hargaPakanRata?.harga_kg || 0),
+      // Harga: hanya peran keuangan. Non-keuangan dapat 0 sehingga proyeksi
+      // biaya dan HPP tidak bisa dihitung di layar mereka.
+      hargaPakanRata: fin ? +(hargaPakanRata?.harga_kg || 0) : 0,
       hargaPakanJenis: hargaJenis.map(h => ({ jenis: h.jenis, harga: fin ? +h.harga_kg : null, kg: +h.kg_dibeli })),
 
       targetMortalitasPct: +cfg.target_mortalitas_pct,
@@ -214,6 +222,10 @@ export async function buildBootstrap(user, batchCode) {
       kontakAlamat: cfg.kontak_alamat || '', kontakJam: cfg.kontak_jam || '',
       batasMortalitasHarian: +cfg.batas_mortalitas_harian, batasPakanPct: +cfg.batas_deviasi_pakan_pct, batasSelisihKg: +cfg.batas_selisih_opname_kg,
       ambangApprovalRp: +cfg.ambang_approval_rp,
+      // Batas hari nota boleh dimundurkan sebelum jadi koreksi (butuh alasan + persetujuan Owner).
+      batasBackdateHari: +(cfg.batas_backdate_hari ?? 7),
+      // Zona waktu farm: layar menghitung tanggal kalender dengan ini, bukan zona perangkat.
+      zonaWaktu: cfg.zona_waktu || 'Asia/Jakarta',
       pakemPakan: (cfg.pakem_pakan || []).map(r => +r[2]), jadwalTimbangHari: +(cfg.jadwal_timbang_hari || 0),
       bawaan,
     },
@@ -226,7 +238,7 @@ export async function buildBootstrap(user, batchCode) {
       dodDate: b.dod_date, dodQty: b.dod_qty, targetDays: b.target_days, stage: b.stage,
       population: b.population, umur: b.umur_hari, panen: b.perkiraan_panen, sisaHari: b.sisa_hari,
     })),
-    cycle: cycle ? { id: cycle.id, code: cycle.code, breed: cycle.breed, status: 'AKTIF', dodDate: cycle.dod_date, dodQty: cycle.dod_qty, dodPrice: +cycle.dod_price, dodWeight: +cycle.dod_weight_kg, targetDays: cycle.target_days, targetWeight: [+cycle.target_weight_min, +cycle.target_weight_max], targetCurve: cycle.target_curve || [], jatah: cycle.feed_plan ? cycle.feed_plan.map(r => +r[2]) : null, targetMort: +cycle.target_mort_pct, stage: cycle.stage, createdBy: cycle.created_by, createdAt: cycle.created_at } : null,
+    cycle: cycle ? { id: cycle.id, code: cycle.code, breed: cycle.breed, status: 'AKTIF', dodDate: cycle.dod_date, dodQty: cycle.dod_qty, dodPrice: fin ? +cycle.dod_price : null, dodWeight: +cycle.dod_weight_kg, targetDays: cycle.target_days, targetWeight: [+cycle.target_weight_min, +cycle.target_weight_max], targetCurve: cycle.target_curve || [], jatah: cycle.feed_plan ? cycle.feed_plan.map(r => +r[2]) : null, targetMort: +cycle.target_mort_pct, stage: cycle.stage, createdBy: cycle.created_by, createdAt: cycle.created_at } : null,
     prevCycles: prevCycles.map(c => ({
       id: c.cycle_id, code: c.code, breed: c.breed, status: c.status === 'CLOSED' ? 'DITUTUP' : 'SELESAI',
       dodDate: c.dod_date, dodQty: c.dod_qty, closedAt: c.closed_at, closeNote: c.close_note,
@@ -256,11 +268,25 @@ export async function buildBootstrap(user, batchCode) {
     expenses: expenses.map(e => ({ id: e.id, date: e.occurred_at, cat: { DOD: 'DOD', PAKAN: 'Pakan', VITAMIN: 'Vitamin', OBAT: 'Obat', LISTRIK: 'Listrik', GAS: 'Gas', SEKAM: 'Sekam', TENAGA_KERJA: 'Tenaga kerja', TRANSPORT: 'Transport', PERALATAN: 'Peralatan', MAINTENANCE: 'Maintenance', LAIN: 'Biaya lain' }[e.category], amount: +e.amount, vendor: e.vendor, ref: e.ref_no, user: e.created_by, status: e.status, locked: e.locked })),
     inventory: inventory.map(i => ({ ...i, qty: +i.qty, min: +i.min, avgW: i.avgW ? +i.avgW : undefined })),
     invTx: invTx.map(t => ({ id: t.id, date: t.occurred_at, item: t.inventory_id, type: t.type, qty: Math.abs(+t.qty), ref: t.ref_type === 'order_item' ? 'Order' : (t.note || t.ref_type), user: t.created_by })),
-    products: products.map(p => ({ id: p.id, name: p.name, desc: p.description, unit: 'ekor', price: +p.price_per_kg, minOrder: p.min_order, stockFrom: p.stock_source === 'POPULATION' ? 'population' : p.inventory_id, avgW: +p.avg_weight_kg, type: p.type, pricePerKg: +p.price_per_kg, avgWeightKg: +p.avg_weight_kg, stockSource: p.stock_source, inventoryId: p.inventory_id, published: p.is_published })),
+    // Harga produk juga nominal, jadi ikut ditutup untuk peran non-keuangan.
+    // CATATAN: harga yang sama tetap terbuka tanpa login di /api/v1/public/products
+    // karena dipakai website penjualan. Penutupan di sini membuat layar peran
+    // non-keuangan bersih, bukan membuat harganya rahasia.
+    products: products.map(p => ({ id: p.id, name: p.name, desc: p.description, unit: 'ekor', price: fin ? +p.price_per_kg : null, minOrder: p.min_order, stockFrom: p.stock_source === 'POPULATION' ? 'population' : p.inventory_id, avgW: +p.avg_weight_kg, type: p.type, pricePerKg: fin ? +p.price_per_kg : null, avgWeightKg: +p.avg_weight_kg, stockSource: p.stock_source, inventoryId: p.inventory_id, published: p.is_published })),
     customers: customers.map(c => ({ id: c.id, name: c.name, phone: c.phone, type: c.type })),
     orders: orders.map(o => ({ id: o.code, uuid: o.id, date: o.created_at, customer: o.customer_id, product: o.product_id, qty: o.qty, weight: o.weight_kg ? +o.weight_kg : null, priceKg: fin ? +o.price_per_kg : null, pay: o.payment_status, ship: o.shipping_status, status: o.status, user: o.created_by, source: o.source, pickup: o.pickup_date, address: o.address, note: o.note, decidedBy: o.decided_by, decidedAt: o.decided_at, barn: bcode[o.barn_id] })),
-    corrections: corrections.map(c => ({ id: c.id, type: { feed_transaction: 'FEED', mortality: 'MORT', weight_record: 'WEIGHT' }[c.entity_type], recordId: c.entity_id, field: c.field, oldVal: c.old_value, newVal: c.new_value, reason: c.reason, photo: c.photo, requestedBy: c.requested_by, requestedAt: c.requested_at, status: c.status, decidedBy: c.decided_by, decidedAt: c.decided_at, rejectReason: c.reject_reason })),
-    audit: audit.map(a => ({ id: a.id, date: a.occurred_at, user: a.actor_id || 'SYSTEM', action: a.action, entity: a.entity_type, detail: a.detail, ref: a.entity_id || '-', hash: a.hash ? a.hash.slice(0, 8) : '' })),
+    // Permintaan koreksi bisa menyangkut field harga (price_per_kg, amount).
+    // Nilai lama/barunya nominal keuangan, jadi untuk peran non-keuangan
+    // nilainya tidak dikirim dan alasannya disensor. Jenis koreksi, siapa yang
+    // minta, dan statusnya tetap terlihat supaya alur persetujuan tetap jalan.
+    corrections: corrections.map(c => { const uang = /price|harga|amount|biaya|nilai/i.test(c.field || '');
+      return { id: c.id, type: { feed_transaction: 'FEED', mortality: 'MORT', weight_record: 'WEIGHT' }[c.entity_type], recordId: c.entity_id, field: c.field, oldVal: (fin || !uang) ? c.old_value : null, newVal: (fin || !uang) ? c.new_value : null, reason: fin ? c.reason : sensorRupiah(c.reason), photo: c.photo, requestedBy: c.requested_by, requestedAt: c.requested_at, status: c.status, decidedBy: c.decided_by, decidedAt: c.decided_at, rejectReason: fin ? c.reject_reason : sensorRupiah(c.reject_reason) }; }),
+    // Jejak audit tetap utuh untuk peran keuangan. Untuk peran lain, nominal
+    // rupiah di dalam `detail` disensor di SERVER — bukan disembunyikan di
+    // layar — karena detail ditulis dengan nominal untuk hampir semua aksi uang
+    // ("Biaya OBAT Rp 400.000 disetujui", "Pembelian pakan 500 kg — Rp 2.775.000").
+    // Siapa, kapan, aksi apa, dan keterangan operasionalnya tetap terbaca.
+    audit: audit.map(a => ({ id: a.id, date: a.occurred_at, user: a.actor_id || 'SYSTEM', action: a.action, entity: a.entity_type, detail: fin ? a.detail : sensorRupiah(a.detail), ref: a.entity_id || '-', hash: a.hash ? a.hash.slice(0, 8) : '' })),
     anomalyState,
     harian: harian.map(h => ({ code: h.code, barn: h.barn_code, barnName: h.barn_name, pop: h.population, umur: h.umur_hari, masuk: h.masuk,
       pakanHariIni: +h.pakan_hari_ini, pakanKemarin: +h.pakan_kemarin, pakanRata3: h.hari_tercatat ? +h.pakan_3hari / h.hari_tercatat : null,
@@ -278,11 +304,20 @@ export async function buildBootstrap(user, batchCode) {
     fcrSeri: fcrSeri.map(w => { const hidup = w.pop * +w.avg_kg; const awal = w.dod_weight_kg > 0 ? w.masuk * +w.dod_weight_kg : 0; const tambah = hidup - awal;
       return { date: w.occurred_at, barn: bcode[w.barn_id], umur: +w.umur, pop: w.pop, bobot: +w.avg_kg, pakan: +w.pakan, fcr: tambah > 0 && +w.pakan > 0 ? +w.pakan / tambah : null }; }),
     panen: panen.map((x, i) => ({ code: x.code, inv: `INV-${String(cycle.code).replace(/\D/g, '')}-${String(i + 1).padStart(2, '0')}`, date: x.created_at, pembeli: x.pembeli || 'Pengepul', hp: x.hp && x.hp !== '-' ? x.hp : '',
-      barn: bcode[x.barn_id], qty: x.qty, kg: +x.weight_kg, harga: +x.price_per_kg, total: Math.round(+x.weight_kg * +x.price_per_kg), pay: x.payment_status, note: x.note, timbangan: x.timbangan || null, oleh: x.oleh })),
-    biaya: biaya.map(e => ({ id: e.id, date: e.created_at, kat: e.kat, jumlah: Math.round(+e.amount), ket: e.vendor && e.vendor !== '-' ? e.vendor : '', status: e.status, oleh: e.oleh, nota: e.ada_nota })),
-    // Uang batch ini terbuka untuk semua peran yang membuka halaman kandangnya.
-    uang: uangRow ? { panen: Math.round(+uangRow.panen), dod: Math.round(+uangRow.dod), pakan: Math.round(+uangRow.pakan), pakanKg: +uangRow.pakan_kg, lain: Math.round(+uangRow.lain),
+      barn: bcode[x.barn_id], qty: x.qty, kg: +x.weight_kg, harga: fin ? +x.price_per_kg : null, total: fin ? Math.round(+x.weight_kg * +x.price_per_kg) : null, pay: x.payment_status, note: x.note, timbangan: x.timbangan || null, oleh: x.oleh })),
+    // Nominal biaya hanya untuk peran keuangan. Kategori, status, dan bukti nota
+    // tetap dikirim supaya anak kandang dan manager masih bisa melihat APA yang
+    // sudah dicatat dan apakah notanya ada — tanpa melihat berapa rupiahnya.
+    biaya: biaya.map(e => ({ id: e.id, date: e.created_at, kat: e.kat, jumlah: fin ? Math.round(+e.amount) : null, ket: e.vendor && e.vendor !== '-' ? e.vendor : '', status: e.status, oleh: e.oleh, nota: e.ada_nota })),
+    /* Uang batch ini: modal, biaya, dan laba. HANYA peran keuangan.
+       Dulu dikirim ke semua peran, sehingga penjagaan pada cycleSummary.cost
+       tidak ada artinya — angka yang sama bisa disusun ulang dari sini, dan
+       memang itulah yang dilakukan cadangan di calc.modal(). */
+    uang: fin && uangRow ? { panen: Math.round(+uangRow.panen), dod: Math.round(+uangRow.dod), pakan: Math.round(+uangRow.pakan), pakanKg: +uangRow.pakan_kg, lain: Math.round(+uangRow.lain),
       laba: Math.round(+uangRow.panen - +uangRow.dod - +uangRow.pakan - +uangRow.lain) } : null,
+    // Berapa kg pakan terpakai bukan angka keuangan — tetap dikirim untuk FCR
+    // dan laporan pakan, terpisah dari nilai rupiahnya.
+    pakanKg: uangRow ? +uangRow.pakan_kg : 0,
     stokPakanJenis: stokJenis.map(x => ({ jenis: x.jenis, beli: +x.beli, pakai: +x.pakai, stok: +x.stok })),
     pakaiFarmRata: pakaiFarm.hari ? +pakaiFarm.kg / pakaiFarm.hari : 0,
   };

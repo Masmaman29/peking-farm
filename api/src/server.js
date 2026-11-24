@@ -1,4 +1,6 @@
 import Fastify from 'fastify';
+import { sensorRupiah } from './sensor.js';
+const FIN_ROLES = new Set(['OWNER', 'ADMIN']);
 import cookie from '@fastify/cookie';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
@@ -175,7 +177,13 @@ app.get('/api/v1/auth/me', async req => req.user);
 
 /* ---------- data ---------- */
 app.get('/api/v1/bootstrap', async req => buildBootstrap(req.user, req.query?.batch));
-app.get('/api/v1/notifications', async req => rows('SELECT * FROM notification WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50', [req.user.id]));
+// Notifikasi juga membawa nominal di dalam kalimat (body). Untuk peran
+// non-keuangan nominalnya disensor di server, bukan disembunyikan di layar.
+app.get('/api/v1/notifications', async req => {
+  const r = await rows('SELECT * FROM notification WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50', [req.user.id]);
+  if (FIN_ROLES.has(req.user.role)) return r;
+  return r.map(n => ({ ...n, title: sensorRupiah(n.title), body: sensorRupiah(n.body) }));
+});
 app.post('/api/v1/notifications/read', async req => { await q('UPDATE notification SET read_at=now() WHERE user_id=$1 AND read_at IS NULL', [req.user.id]); return { ok: true }; });
 app.get('/api/v1/audit/verify', async (req, reply) => {
   if (!['OWNER', 'MANAGER'].includes(req.user.role)) return reply.code(403).send({ code: 'FORBIDDEN', message: 'Hanya Owner/Manager.' });
@@ -278,7 +286,23 @@ app.setNotFoundHandler((req, reply) => { if (req.url.startsWith('/api/')) return
 /* ---------- cron ringan: auto-lock tiap jam, bersih sesi ---------- */
 setInterval(() => { q('SELECT fn_auto_lock()').catch(() => {}); q('DELETE FROM session WHERE expires_at < now()').catch(() => {}); }, 3600 * 1000);
 
-await migrate(app.log).catch(e => app.log.error('migrate: ' + e.message));
+/* Migrasi WAJIB berhasil sebelum aplikasi melayani permintaan.
+   Sebelumnya errornya ditelan (.catch(log.error)) dan aplikasi tetap jalan.
+   Akibatnya aplikasi bisa melayani permintaan dengan schema SEPARUH — sebagian
+   penjaga aktif, sebagian tidak — dan tidak ada yang memberi tahu. Keadaan ini
+   terjadi di lingkungan lokal pada 24 Nov 2026: fn_hari_mundur tidak ada dan
+   trg_backdate_guard tidak terpasang, sementara aplikasi berjalan normal.
+   Lebih baik aplikasi berhenti dan terlihat mati daripada jalan dengan aturan
+   keuangan yang separuh. Ini setara dengan ON_ERROR_STOP=1. */
+try {
+  await migrate(app.log);
+} catch (e) {
+  app.log.fatal(`MIGRASI DATABASE GAGAL — aplikasi tidak dijalankan: ${e.message}`);
+  app.log.fatal('Schema database mungkin separuh diterapkan. Periksa db/*.sql ' +
+                'dan tabel schema_migration sebelum menjalankan ulang. ' +
+                'Jangan biarkan aplikasi melayani permintaan dengan schema separuh.');
+  process.exit(1);
+}
 await ensureAppRole().catch(e => app.log.warn('ensureAppRole: ' + e.message));
 if (process.env.SEED_DEMO === 'true') await seedIfEmpty(app.log);
 mulaiPengirimWA(app.log);

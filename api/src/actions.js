@@ -10,6 +10,11 @@ import path from 'node:path';
 import argon2 from 'argon2';
 import { tx, audit, config } from './db.js';
 
+/* Versi rumus yang dipakai saat memotret HPP penutupan batch. Disimpan di tiap
+   potret supaya angka lama tetap bisa dijelaskan kalau rumusnya berubah nanti.
+   018 = biaya pakan dinilai menurut harga pada tanggal pemakaian. */
+const FORMULA_HPP = '018-harga-pakan-saat-pakai';
+
 /* Jatah pakan: 5 angka gram/ekor/hari untuk rentang umur tetap. */
 const RENTANG_UMUR = [[1, 7], [8, 14], [15, 21], [22, 28], [29, 999]];
 const skemaJatah = z.array(z.number().nonnegative().max(1000)).length(5, 'Jatah pakan harus 5 angka (satu per rentang umur).');
@@ -186,7 +191,7 @@ export const ACTIONS = {
     return { id: cr2.rows[0].id };
   },
   async APPROVE(c, p, user) {
-    need(user, ['OWNER', 'MANAGER']);
+    need(user, ['OWNER', 'ADMIN', 'MANAGER']);
     const v = z.object({ kind: z.enum(['CORRECTION', 'ORDER', 'PURCHASE', 'EXPENSE']), id: z.string() }).parse(p);
     const cfg = await config(c); const big = +cfg.ambang_approval_rp;
     if (v.kind === 'CORRECTION') {
@@ -216,6 +221,18 @@ export const ACTIONS = {
     if (v.kind === 'ORDER') {
       const o = (await c.query(`SELECT * FROM "order" WHERE code=$1 OR id::text=$1`, [v.id])).rows[0];
       if (!o || o.status !== 'PENDING_APPROVAL') throw new ActionError('Order tidak dalam status menunggu approval.');
+      // Order sampai ke PENDING_APPROVAL hanya karena nilainya melewati ambang,
+      // jadi menyetujuinya adalah keputusan keuangan: OWNER/ADMIN saja.
+      if (!['OWNER', 'ADMIN'].includes(user.role)) deny('Order di atas ambang hanya bisa disetujui Owner atau Admin.');
+      /* Aturan empat mata (constraint approval_check2 di database): yang mengajukan
+         tidak boleh menyetujui pengajuannya sendiri. Dicegat di sini supaya
+         pesannya bisa dibaca, bukan pesan constraint mentah. */
+      {
+        const ap = (await c.query(`SELECT requested_by FROM approval WHERE entity_type='order' AND entity_id=$1 AND status='PENDING' LIMIT 1`, [o.id])).rows[0];
+        if (ap && ap.requested_by === user.id) {
+          throw new ActionError('Order ini Anda sendiri yang mengajukan, jadi tidak bisa Anda setujui sendiri. Minta Owner atau Admin lain yang memutuskan.');
+        }
+      }
       await c.query(`UPDATE "order" SET status='CONFIRMED', decided_by=$1, decided_at=now() WHERE id=$2`, [user.id, o.id]);
       await c.query('SELECT fn_order_apply_stock($1,$2)', [o.id, user.id]);
       await c.query(`UPDATE approval SET status='APPROVED', decided_by=$1, decided_at=now() WHERE entity_type='order' AND entity_id=$2 AND status='PENDING'`, [user.id, o.id]);
@@ -256,15 +273,52 @@ export const ACTIONS = {
   /* ---------------- ADMIN / KOMERSIAL ---------------- */
   async FEED_PURCHASE(c, p, user, file) {
     need(user, ['OWNER', 'ADMIN']);
-    const v = z.object({ qty: z.number().positive(), price: z.number().positive(), vendor: z.string().min(1), ref: z.string().min(1), feedType: z.string().optional() }).parse(p);
+    const v = z.object({ qty: z.number().positive(), price: z.number().positive(), vendor: z.string().min(1), ref: z.string().min(1), feedType: z.string().optional(),
+      tanggal: z.string().trim().optional(), alasanMundur: z.string().trim().max(300).optional() }).parse(p);
     await requirePhoto(c, file);
     const cfg = await config(c);
+    /* Tanggal nota boleh dimundurkan — nota memang kadang baru ketemu belakangan.
+       Tapi lewat batas (bawaan 7 hari) nota itu jadi KOREKSI: wajib beralasan,
+       masuk sebagai PENDING, dan hanya OWNER yang boleh menyetujui.
+       Tanggal kejadian (occurred_at) dan waktu input sebenarnya (created_at)
+       disimpan terpisah, jadi keterlambatannya selalu bisa dilihat.
+       Aturan yang sama juga dijaga trigger fn_backdate_guard di database,
+       supaya tetap berlaku lewat jalur mana pun. */
+    /* Hari mundur dihitung DI DATABASE lewat fn_hari_mundur(), bukan di sini.
+       Dengan begitu backend, trigger, dan layar memakai satu rumus yang sama:
+       selisih tanggal kalender menurut zona waktu farm (Asia/Jakarta), bukan
+       selisih jam. Server yang menentukan — angka dari layar hanya petunjuk. */
+    const batas = +(await c.query('SELECT fn_batas_backdate() AS n')).rows[0].n;
+    let occurred = null, mundur = 0;
+    if (v.tanggal) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(v.tanggal)) throw new ActionError('Tanggal nota tidak terbaca.');
+      const h = await c.query(
+        `SELECT ($1::date + TIME '07:00') AT TIME ZONE fn_zona_waktu() AS saat,
+                fn_hari_mundur(($1::date + TIME '07:00') AT TIME ZONE fn_zona_waktu()) AS mundur`, [v.tanggal]);
+      if (!h.rows[0]) throw new ActionError('Tanggal nota tidak terbaca.');
+      occurred = h.rows[0].saat;
+      mundur = +h.rows[0].mundur;
+      const depan = (await c.query(
+        `SELECT ($1::date > (now() AT TIME ZONE fn_zona_waktu())::date) AS y`, [v.tanggal])).rows[0].y;
+      if (depan) throw new ActionError('Tanggal nota tidak boleh di masa depan.');
+    }
+    const koreksi = mundur > batas;
+    if (koreksi && (!v.alasanMundur || v.alasanMundur.length < 5)) {
+      throw new ActionError(`Nota ini mundur ${mundur} hari (batas ${batas} hari), jadi masuk sebagai koreksi. Tulis alasannya, dan nanti harus disetujui Owner.`);
+    }
     const cy = { id: null };   // pembelian pakan masuk stok farm, bukan batch tertentu
     const feed = (await c.query(`SELECT id FROM feed WHERE type=$1 LIMIT 1`, [v.feedType || 'GROWER'])).rows[0] || (await c.query('SELECT id FROM feed LIMIT 1')).rows[0];
-    const big = v.qty * v.price > +cfg.ambang_approval_rp;
-    const r = await c.query(`INSERT INTO feed_transaction(cycle_id,feed_id,type,qty_kg,price_per_kg,vendor,ref_no,occurred_at,status,locked,created_by) VALUES ($1,$2,'PURCHASE',$3,$4,$5,$6,now(),$7,$8,$9) RETURNING id`,
-      [cy.id, feed.id, v.qty, v.price, v.vendor, v.ref, big ? 'PENDING' : 'APPROVED', !big, user.id]);
-    if (big) { await approvalRow(c, 'feed_transaction', r.rows[0].id, user, 'OWNER'); await notify(c, ['OWNER'], 'approval_pending', 'Pembelian pakan menunggu approval', `${v.qty} kg — ${rp(v.qty * v.price)}`, '/persetujuan'); }
+    // Nota koreksi SELALU menunggu persetujuan, berapa pun nilainya.
+    const big = koreksi || v.qty * v.price > +cfg.ambang_approval_rp;
+    const r = await c.query(`INSERT INTO feed_transaction(cycle_id,feed_id,type,qty_kg,price_per_kg,vendor,ref_no,occurred_at,status,locked,created_by,backdate_reason) VALUES ($1,$2,'PURCHASE',$3,$4,$5,$6,COALESCE($10,now()),$7,$8,$9,$11) RETURNING id`,
+      [cy.id, feed.id, v.qty, v.price, v.vendor, v.ref, big ? 'PENDING' : 'APPROVED', !big, user.id,
+       occurred, koreksi ? v.alasanMundur : null]);
+    if (big) {
+      await approvalRow(c, 'feed_transaction', r.rows[0].id, user, 'OWNER');
+      await notify(c, ['OWNER'], 'approval_pending',
+        koreksi ? `Koreksi nota pakan mundur ${mundur} hari` : 'Pembelian pakan menunggu approval',
+        `${v.qty} kg — ${rp(v.qty * v.price)}${koreksi ? ` — tanggal nota ${v.tanggal}, alasan: ${v.alasanMundur}` : ''}`, '/persetujuan');
+    }
     await saveAttachment(c, file, 'feed_transaction', r.rows[0].id, 'nota', user);
     await audit(c, user.id, 'CREATE', 'feed_transaction', `Pembelian pakan ${v.qty} kg — ${rp(v.qty * v.price)}${big ? ' (menunggu approval)' : ''}`, r.rows[0].id);
     return { id: r.rows[0].id, pending: big };
@@ -287,7 +341,16 @@ export const ACTIONS = {
   },
   async EXPENSE(c, p, user, file) {
     need(user, ['OWNER', 'ADMIN']);
-    const catMap = { Vitamin: 'VITAMIN', Obat: 'OBAT', Listrik: 'LISTRIK', Gas: 'GAS', Sekam: 'SEKAM', 'Tenaga kerja': 'TENAGA_KERJA', Transport: 'TRANSPORT', Peralatan: 'PERALATAN', Maintenance: 'MAINTENANCE', 'Biaya lain': 'LAIN', DOD: 'DOD', Pakan: 'PAKAN' };
+    /* T-6: kategori DOD dan Pakan SENGAJA tidak ada di sini.
+       Biaya DOD sudah dihitung dari cycle.dod_qty x cycle.dod_price, dan biaya
+       pakan dari feed_transaction USAGE x harga nota. Mencatatnya lagi sebagai
+       expense membuat v_cycle_cost menjumlahkannya dua kali — terukur Rp 999.000
+       pada pengujian. Formulir memang tidak menawarkannya, tapi dulu aksi ini
+       masih menerimanya lewat permintaan langsung. */
+    const catMap = { Vitamin: 'VITAMIN', Obat: 'OBAT', Listrik: 'LISTRIK', Gas: 'GAS', Sekam: 'SEKAM', 'Tenaga kerja': 'TENAGA_KERJA', Transport: 'TRANSPORT', Peralatan: 'PERALATAN', Maintenance: 'MAINTENANCE', 'Biaya lain': 'LAIN' };
+    if (/^(dod|pakan)$/i.test(String(p && p.cat || '').trim())) {
+      throw new ActionError('Biaya DOD dan pakan tidak dicatat di sini — keduanya sudah dihitung otomatis dari data bibit dan pemakaian pakan. Mencatatnya lagi akan menghitung dua kali.');
+    }
     const v = z.object({ cat: z.string(), amount: z.number().positive(), vendor: z.string().min(1), ref: z.string().min(1), barn: z.string().optional() }).parse(p);
     if (!catMap[v.cat]) throw new ActionError('Kategori tidak dikenal.');
     await requirePhoto(c, file);
@@ -354,7 +417,13 @@ export const ACTIONS = {
     const o = await c.query(`INSERT INTO "order"(code,customer_id,source,status,payment_status,pickup_date,total_est,created_by) VALUES ($1,$2,'ADMIN',$3,$4,$5,$6,$7) RETURNING id`,
       [code, cust, big ? 'PENDING_APPROVAL' : 'CONFIRMED', v.pay === 'PAID' ? 'PAID' : v.pay === 'DP' ? 'DP' : 'UNPAID', v.pickup || null, est, user.id]);
     await c.query(`INSERT INTO order_item(order_id,product_id,cycle_id,barn_id,qty,weight_kg,price_per_kg) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [o.rows[0].id, prod.id, cy?.id || null, barn, v.qty, v.weight || null, v.priceKg]);
-    if (big) { await approvalRow(c, 'order', o.rows[0].id, user, 'MANAGER'); await notify(c, ['OWNER', 'MANAGER'], 'approval_pending', `Order ${code} menunggu approval`, rp(est), '/persetujuan'); }
+    // Manager tetap diberi tahu ada order menunggu persetujuannya, tapi tanpa
+    // nominalnya. Nominal hanya ke peran keuangan.
+    if (big) {
+      await approvalRow(c, 'order', o.rows[0].id, user, 'OWNER');
+      await notify(c, ['OWNER', 'ADMIN'], 'approval_pending', `Order ${code} menunggu approval`, rp(est), '/persetujuan');
+      await notify(c, ['MANAGER'], 'approval_pending', `Order ${code} menunggu approval`, `${v.qty} ekor ${prod.name}`, '/persetujuan');
+    }
     else await c.query('SELECT fn_order_apply_stock($1,$2)', [o.rows[0].id, user.id]);
     await audit(c, user.id, 'CREATE', 'order', `Order ${code} — ${v.qty} ekor ${prod.name} — ${rp(est)}${big ? ' (menunggu approval)' : ' — stok berkurang ' + v.qty + ' ekor'}`, o.rows[0].id);
     return { code, pending: big };
@@ -363,6 +432,13 @@ export const ACTIONS = {
     need(user, ['OWNER', 'ADMIN', 'MANAGER']);
     const v = z.object({ id: z.string(), status: z.enum(['CONFIRMED', 'PAID', 'PREPARING', 'READY', 'DELIVERED', 'CANCELLED']), weight: z.number().positive().optional() }).parse(p);
     const o = (await c.query(`SELECT * FROM "order" WHERE code=$1 OR id::text=$1`, [v.id])).rows[0]; if (!o) throw new ActionError('Order tidak ditemukan.');
+    /* Jalur alternatif ditutup: tanpa ini, order yang sedang menunggu approval
+       bisa langsung di-CONFIRMED lewat sini oleh siapa pun yang boleh mengubah
+       status order — termasuk Manager — sehingga persetujuan keuangannya
+       terlewat sama sekali. Membatalkan order tetap boleh. */
+    if (o.status === 'PENDING_APPROVAL' && v.status !== 'CANCELLED' && !['OWNER', 'ADMIN'].includes(user.role)) {
+      deny('Order ini menunggu persetujuan Owner atau Admin. Statusnya belum boleh diubah.');
+    }
     const sets = [`status='${v.status}'`];
     if (v.status === 'PAID') sets.push(`payment_status='PAID'`);
     if (v.status === 'DELIVERED') sets.push(`shipping_status='DELIVERED'`);
@@ -607,13 +683,33 @@ export const ACTIONS = {
     await c.query(`UPDATE cycle SET status='CLOSED', stage='HARVEST', closed_at=now(), closed_by=$1, close_note=$2, updated_by=$1, updated_at=now() WHERE id=$3`,
       [user.id, v.note || null, cy.id]);
 
+    /* POTRET HPP — dibuat di transaksi yang sama dengan penutupan, jadi tidak
+       mungkin ada siklus CLOSED tanpa potret, atau potret setengah jadi.
+       Dibaca sekali di sini selagi belum ada potretnya (v_cycle_summary masih
+       menghitung berjalan), lalu dibekukan. Setelah baris ini, angka batch
+       tidak berubah lagi oleh nota apa pun — termasuk nota bertanggal mundur. */
+    const live = (await c.query('SELECT * FROM v_cycle_summary WHERE cycle_id=$1', [cy.id])).rows[0];
+    await c.query(`INSERT INTO cycle_hpp_snapshot
+      (cycle_id,dod_cost,operating_cost,total_cost,revenue,profit,harvest_kg,harvest_qty,
+       hpp_per_kg,hpp_per_ekor,feed_kg,closed_at,formula_version,created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
+        CASE WHEN $7::numeric > 0 THEN round($4::numeric/$7::numeric,2) END,
+        CASE WHEN $8::integer > 0 THEN round($4::numeric/$8::integer,2) END,
+        $9,now(),$10,$11)`,
+      [cy.id, live.dod_cost, live.operating_cost, live.cost_total, live.revenue, live.profit,
+       live.harvest_weight_kg, live.harvest_qty, live.feed_kg, FORMULA_HPP, user.id]);
+
     const out = (await c.query('SELECT * FROM v_cycle_summary WHERE cycle_id=$1', [cy.id])).rows[0];
     await audit(c, user.id, 'UPDATE', 'cycle',
       `Siklus ${cy.code} ditutup — ${out.days} hari, panen ${out.harvested} ekor / ${out.harvest_weight_kg} kg, mati ${out.deaths} ekor (${out.mortality_pct || 0}%), FCR ${out.fcr_final || '-'}, pendapatan ${rp(out.revenue)}, modal ${rp(out.cost_total)}, laba ${rp(out.profit)}` +
       (total > 0 ? ` — ${total} ekor sisa dibawa keluar` : ''),
       cy.id, { status: 'ACTIVE' }, { status: 'CLOSED' });
-    await notify(c, ['OWNER', 'MANAGER'], 'cycle_closed', `Siklus ${cy.code} ditutup`,
+    // Angka keuangan hanya ke peran keuangan. Manager tetap diberi tahu siklusnya
+    // ditutup beserta angka operasional yang memang bagian pekerjaannya.
+    await notify(c, ['OWNER', 'ADMIN'], 'cycle_closed', `Siklus ${cy.code} ditutup`,
       `Laba ${rp(out.profit)} — FCR ${out.fcr_final || '-'}, mortalitas ${out.mortality_pct || 0}%`, '/laporan');
+    await notify(c, ['MANAGER'], 'cycle_closed', `Siklus ${cy.code} ditutup`,
+      `${out.days} hari — panen ${out.harvested} ekor, FCR ${out.fcr_final || '-'}, mortalitas ${out.mortality_pct || 0}%`, '/laporan');
     return { code: cy.code, summary: out, carried: total };
   },
 

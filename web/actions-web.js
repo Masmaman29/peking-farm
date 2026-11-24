@@ -1,3 +1,18 @@
+/* Berapa HARI KALENDER nota mundur, menurut zona waktu FARM — bukan zona waktu
+   perangkat yang dipakai. Anak kandang bisa membuka aplikasi dari ponsel yang
+   zonanya beda, dan dulu angka ini ikut berbeda.
+   Angka ini hanya petunjuk di layar: server yang menentukan, lewat
+   fn_hari_mundur() di database. Negatif = tanggal di masa depan. */
+function hariKalenderFarm(d){
+  const z = (MASTER && MASTER.zonaWaktu) || 'Asia/Jakarta';
+  try { return new Intl.DateTimeFormat('en-CA',{timeZone:z,year:'numeric',month:'2-digit',day:'2-digit'}).format(d); }
+  catch(_){ return new Date(d.getTime()-d.getTimezoneOffset()*6e4).toISOString().slice(0,10); }
+}
+function mundurHari(iso){
+  if(!iso) return 0;
+  const hariIni = hariKalenderFarm(new Date());
+  return Math.round((Date.parse(hariIni+'T00:00:00Z') - Date.parse(iso+'T00:00:00Z'))/864e5);
+}
 const SITE_ONLY = !(location.hostname.startsWith('os.') || ['localhost','127.0.0.1',''].includes(location.hostname));
 
 /* ---------------- KONEKSI KE SERVER ---------------- */
@@ -164,12 +179,29 @@ document.addEventListener('change',e=>{const el=e.target.closest('[data-act]');i
  if(a==='order-customer'){document.getElementById('newcust').hidden=el.value!=='NEW';}
  if(a==='site-product'){openModal('siteorder',{product:el.value});}
  if(a==='prod-src'){const box=document.getElementById('p-inv');if(box)box.hidden=el.value!=='INVENTORY';}
+ /* Tanggal nota pembelian diubah: kalau mundur lebih dari batas, isian alasan
+    dimunculkan dan diwajibkan. Batasnya ikut konfigurasi, bukan angka tetap. */
+ if(a==='pur-tanggal'){const w=document.getElementById('pur-alasan-wrap');
+  if(w){const m=mundurHari(el.value),batas=MASTER.batasBackdateHari||7,perlu=m>batas;
+   w.hidden=!perlu;
+   const inp=w.querySelector('[name=alasanMundur]');if(inp)inp.required=perlu;
+   const info=document.getElementById('pur-alasan-info');
+   if(info)info.textContent=perlu?`Nota ini mundur ${m} hari (batas ${batas}). Akan masuk sebagai koreksi dan menunggu persetujuan Owner.`:'';}}
  if(a==='cycle-calc')cycleCalc();
  if(a==='harvest-calc')harvestCalc();
  if(a==='harvest-cust'){const box=document.getElementById('pn-new');if(box)box.hidden=el.value!=='NEW';}
 });
 document.addEventListener('input',e=>{const el=e.target;const a=el.dataset.act;
  if(a==='audit-q'){state.filters.q=el.value;const c=document.getElementById('content');const y=c.scrollTop;render();document.getElementById('content').scrollTop=y;const i=document.querySelector('[data-act=audit-q]');i.focus();i.setSelectionRange(i.value.length,i.value.length);}
+ /* Simulasi harga panen: hanya mengubah angka di layar. Tidak disimpan, tidak
+    dikirim ke server. Posisi gulir dan fokus dijaga seperti pencarian audit. */
+ if(a==='sim-harga'){const i=+el.dataset.i;
+  const h=(state.simHarga&&state.simHarga.length===4?state.simHarga.slice():SIM_HARGA_AWAL.slice());
+  h[i]=Math.max(0,+el.value||0);state.simHarga=h;
+  const c=document.getElementById('content');const y=c?c.scrollTop:0;const pos=el.selectionStart;render();
+  const c2=document.getElementById('content');if(c2)c2.scrollTop=y;
+  const n=document.querySelector(`[data-act=sim-harga][data-i="${i}"]`);
+  if(n){n.focus();try{n.setSelectionRange(pos,pos);}catch(_){}}}
  if(a==='order-calc')orderCalc();
  if(a==='site-calc'){const f=el.form;const p=DB.products.find(x=>x.id===f.product.value);const q=+f.qty.value||0;document.getElementById('s-w').textContent=num(q*p.avgW,1)+' kg';document.getElementById('s-t').textContent=rp(q*p.avgW*p.price);}
  if(a==='cycle-calc')cycleCalc();
@@ -237,7 +269,13 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
   case 'ak-save-health':{const r=await act('HEALTH',{barn:u.barn,type:v.type,item:v.item,dose:v.dose,note:v.note},file);if(r)done(`${v.type} · ${v.item}`,'ak-sehat');break;}
   case 'submit-correction':{const nv=+v.newVal;if(!(nv>=0)){toast('Isi data baru.','err');return;}const rec=f.dataset.type==='FEED'?DB.feedRecords.find(r=>r.id===f.dataset.id):null;const r=await act('CORRECTION_REQUEST',{type:f.dataset.type,recordId:f.dataset.id,newVal:nv,reason:v.reason+(v.note?' — '+v.note:'')},file);if(r){closeModal();toast('Koreksi diajukan. Status: Pending Approval.');render();}break;}
   case 'submit-order':{const r=await act('ORDER_CREATE',{customer:v.customer,customerName:v.customerName,customerPhone:v.customerPhone,product:v.product,qty:+v.qty,weight:num_(v.weight)||null,priceKg:+v.priceKg,pickup:v.pickup,pay:v.pay});if(r){closeModal();toast(r.pending?`Order ${r.code} dibuat — menunggu approval.`:`Order ${r.code} dibuat. Stok berkurang.`);state.filters.os='ALL';render();}break;}
-  case 'submit-purchase':{if(!needPhoto(f))return;if(!v.jenis){toast('Pilih jenis pakannya.','err');return;}const r=await act('FEED_PURCHASE',{qty:+v.qty,price:+v.price,vendor:v.vendor,ref:v.ref,feedType:v.jenis},file);if(r){closeModal();toast(r.pending?'Pembelian dicatat, menunggu approval Owner.':'Pembelian dicatat. Stok pakan bertambah.');render();}break;}
+  case 'submit-purchase':{if(!needPhoto(f))return;if(!v.jenis){toast('Pilih jenis pakannya.','err');return;}
+    const mundur=mundurHari(v.tanggal),batas=MASTER.batasBackdateHari||7;
+    if(mundur<0){toast('Tanggal nota tidak boleh di masa depan.','err');return;}
+    if(mundur>batas&&(!v.alasanMundur||v.alasanMundur.trim().length<5)){
+      toast(`Nota mundur ${mundur} hari (batas ${batas}). Tulis alasannya dulu.`,'err');return;}
+    const r=await act('FEED_PURCHASE',{qty:+v.qty,price:+v.price,vendor:v.vendor,ref:v.ref,feedType:v.jenis,
+      tanggal:v.tanggal||undefined,alasanMundur:(v.alasanMundur||'').trim()||undefined},file);if(r){closeModal();toast(mundur>batas?`Nota mundur ${mundur} hari dicatat sebagai koreksi — menunggu persetujuan Owner.`:r.pending?'Pembelian dicatat, menunggu approval Owner.':'Pembelian dicatat. Stok pakan bertambah.');render();}break;}
   case 'submit-expense':{if(!needPhoto(f))return;const r=await act('EXPENSE',{cat:v.cat,amount:+v.amount,vendor:v.vendor,ref:v.ref},file);if(r){closeModal();toast(r.pending?'Biaya dicatat, menunggu approval.':'Biaya dicatat.');render();}break;}
   case 'submit-opname':{if(!needPhoto(f))return;const r=await act('OPNAME',{physical:+v.physical,note:v.note},file);if(r){closeModal();toast(Math.abs(r.diff)>=MASTER.batasSelisihKg?`Opname tersimpan. Selisih ${num(r.diff)} kg — PERLU VERIFIKASI.`:'Opname tersimpan, stok sesuai.',Math.abs(r.diff)>=MASTER.batasSelisihKg?'warn':'ok');render();}break;}
   case 'submit-adjust':{const r=await act('STOCK_ADJUST',{qty:+v.qty,reason:v.reason});if(r){closeModal();toast('Penyesuaian disetujui dan dicatat.');render();}break;}

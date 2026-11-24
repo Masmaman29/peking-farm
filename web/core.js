@@ -94,7 +94,29 @@ const calc = {
   feedOpnameLast(){return DB.feedOpname[DB.feedOpname.length-1];},
   feedStockAtDate(date){const bought=DB.feedPurchases.filter(p=>p.status==='APPROVED'&&p.date<=date).reduce((s,p)=>s+p.qty,0);const adj=DB.feedAdjust.filter(a=>a.date<=date).reduce((s,a)=>s+a.qty,0);const used=DB.feedRecords.filter(r=>r.date<=date).reduce((s,r)=>s+calc.feedVal(r),0);return bought+adj-used;},
   feedDiff(){const op=calc.feedOpnameLast();if(!op)return null;const theory=op.theoretical!=null?op.theoretical:calc.feedStockAtDate(op.date);return{op,theory,diff:theory-op.physical};},
-  feedAvg7(){const a=calc.feedByDay();const s=a.slice(-8,-1);return s.length?s.reduce((x,y)=>x+y,0)/s.length:0;},
+  /* Hari mana saja yang PUNYA catatan pakan. Dibedakan dari hari yang
+     tercatat 0 kg — yang pertama berarti belum dicatat, yang kedua berarti
+     memang tidak diberi pakan. */
+  feedHariAda(){const a=Array(calc.day()).fill(false);
+    (DB.feedRecords||[]).forEach(r=>{const d=dayOf(r.date);if(d>=1&&d<=a.length)a[d-1]=true;});
+    return a;},
+  /* Rata-rata pemakaian 7 hari terakhir (tidak termasuk hari ini).
+     DIPERBAIKI (T-5): dulu membagi dengan 7 hari penuh, sehingga hari yang
+     BELUM DICATAT ikut jadi 0 kg dan menyeret rata-rata turun. Akibatnya
+     pencatatan yang bolong membuat angka terlihat lebih bagus — arah yang
+     paling berbahaya untuk sebuah sistem kontrol. Sekarang pembaginya hanya
+     hari yang benar-benar ada catatannya. */
+  feedAvg7(){const a=calc.feedByDay(), ada=calc.feedHariAda();
+    const s=a.slice(-8,-1), t=ada.slice(-8,-1);
+    let jml=0,n=0;
+    for(let i=0;i<s.length;i++) if(t[i]){jml+=s[i];n++;}
+    return n?jml/n:0;},
+  /* Seberapa lengkap pencatatan 7 hari terakhir. Dipakai layar untuk memberi
+     peringatan: rata-rata dari 3 hari tidak sekuat rata-rata dari 7 hari. */
+  feedCatatan7(){const t=calc.feedHariAda().slice(-8,-1);
+    const dicatat=t.filter(Boolean).length;
+    return {dicatat,dari:t.length,lengkap:t.length>0&&dicatat===t.length,
+            kosong:t.length-dicatat};},
   feedToday(){return calc.feedByDay().slice(-1)[0];},
   // Belum ada catatan pemakaian = belum bisa bilang cukup berapa hari.
   feedDaysLeft(){const r=calc.pakaiFarmRata();return r>0?calc.feedStockTheory()/r:null;},
@@ -125,25 +147,229 @@ const calc = {
   fcr(){const w0=calc.bobotDod();if(w0==null)return null;const feed=calc.feedTotal();const w=calc.avgWeight();if(w==null||calc.day()<7)return null;const bio=calc.population()*w-DB.cycle.dodQty*w0;if(bio<=0)return null;return{fcr:feed/bio,feed,bio};},
   fcrSeries(){const w0=calc.bobotDod();if(w0==null)return [];const ws=calc.weightSeries();const fb=calc.feedByDay();return ws.map(p=>{const feed=fb.slice(0,p.day).reduce((a,b)=>a+b,0);const pop=calc.population(null,dateOfDay(p.day));const bio=pop*p.avg-DB.cycle.dodQty*w0;return{day:p.day,fcr:bio>0?feed/bio:null};});},
   expensesApproved(){return DB.expenses.filter(e=>e.status==='APPROVED');},
-  feedCost(){return DB.feedPurchases.filter(p=>p.status==='APPROVED').reduce((s,p)=>s+p.qty*p.price,0);},
-  costByCat(){const m={};calc.expensesApproved().forEach(e=>m[e.cat]=(m[e.cat]||0)+e.amount);m['Pakan']=(m['Pakan']||0)+calc.feedCost();return m;},
-  modal(){return Object.values(calc.costByCat()).reduce((a,b)=>a+b,0);},
-  // Sisa biaya sampai panen. Biaya non-pakan diperkirakan dari realisasi siklus ini,
-  // bukan angka tetap karangan: kalau belum ada biaya tercatat, hasilnya 0 (bukan tebakan).
-  projectedRemainingCost(){if(!DB.cycle)return 0;
-    const daysLeft=Math.max(0,DB.cycle.targetDays-calc.day());
-    const feedNeed=daysLeft*calc.feedAvg7();
-    const feedShort=Math.max(0,feedNeed-calc.feedStockTheory());
-    const nonFeed=calc.expensesApproved().filter(e=>e.cat!=='Pakan').reduce((t,e)=>t+e.amount,0);
-    const perDay=calc.day()>0?nonFeed/calc.day():0;
-    // Pakai harga pakan yang benar-benar dibayar. Kalau belum pernah beli, 0 —
-    // lebih baik proyeksinya kurang daripada memakai angka isian yang mungkin basi.
-    const hrg=MASTER.hargaPakanRata||0;
-    return feedShort*hrg+daysLeft*perDay;},
-  hargaPakanDipakai(){return MASTER.hargaPakanRata||0;},
-  projectedCostIsEstimate(){return calc.expensesApproved().filter(e=>e.cat!=='Pakan').length===0||!MASTER.hargaPakanRata;},
-  projectedPop(){const rate=calc.mortPct()/calc.day();const remain=DB.cycle.targetDays-calc.day();return Math.round(calc.population()*(1-rate/100*remain));},
+  /* Biaya pakan BATCH INI = pakan yang benar-benar dimakan batch ini, dinilai dengan
+     harga nota per jenis pakan. Dihitung server (v_cycle_cost / DB.uang.pakan).
+     Dulu di sini dijumlahkan SELURUH pembelian pakan farm — padahal pembelian masuk
+     stok farm (cycle_id NULL), sehingga setiap batch menanggung pembelian batch lain. */
+  feedCost(){return DB.uang?+DB.uang.pakan||0:0;},
+  /* Biaya DOD tersimpan di tabel cycle (dod_qty x dod_price), bukan di tabel expense,
+     jadi dulu tidak pernah ikut terhitung sama sekali. */
+  dodCost(){return DB.uang?+DB.uang.dod||0:(DB.cycleSummary&&DB.cycleSummary.dodCost!=null?+DB.cycleSummary.dodCost:0);},
+  costByCat(){const m={};
+    const d=calc.dodCost(); if(d>0)m['DOD']=d;
+    const p=calc.feedCost(); if(p>0)m['Pakan']=p;
+    // Biaya lain per kategori, hanya yang sudah disetujui — sama dengan yang
+    // dijumlahkan v_cycle_cost, jadi rinciannya cocok dengan totalnya.
+    calc.expensesApproved().filter(e=>e.cat!=='DOD'&&e.cat!=='Pakan')
+      .forEach(e=>m[e.cat]=(m[e.cat]||0)+e.amount);
+    return m;},
+  /* Modal berjalan batch ini. Server sudah menghitungnya di v_cycle_summary.cost_total
+     (= biaya DOD + pakan terpakai + biaya disetujui). Layar membacanya, tidak menghitung
+     ulang, supaya tidak ada dua angka untuk hal yang sama. */
+  /* Apakah payload membawa data keuangan sama sekali. Untuk peran non-keuangan
+     server memang tidak mengirimkannya (cycleSummary.cost, uang, expenses, dan
+     harga semuanya null). Tanpa penjaga ini seluruh rantai cadangan di bawah
+     berakhir di Rp 0 — angka yang terlihat sah padahal sebenarnya "tidak boleh
+     dilihat". Lebih baik null, supaya layar menulis "—" dan bukan nol palsu. */
+  adaDataKeuangan(){const s=DB.cycleSummary;
+    return !!(DB.uang||(s&&s.cost!=null)||(DB.expenses&&DB.expenses.length));},
+  modal(){if(!calc.adaDataKeuangan())return null;
+    const s=DB.cycleSummary;
+    if(s&&s.cost!=null&&Number.isFinite(+s.cost))return +s.cost;
+    const u=DB.uang; if(u)return (+u.dod||0)+(+u.pakan||0)+(+u.lain||0);
+    return Object.values(calc.costByCat()).reduce((a,b)=>a+b,0);},
+  /* Pembelian pakan tingkat FARM — bukan biaya batch mana pun. Dipisahkan supaya
+     tidak lagi tercampur ke modal batch. */
+  pembelianPakanFarm(){return (DB.feedPurchases||[]).filter(p=>p.status==='APPROVED')
+    .reduce((s,p)=>s+p.qty*(p.price||0),0);},
+  /* ---------------- Jatah pakan per umur ----------------
+     Gram per ekor per hari: jatah khusus batch kalau ada, kalau tidak pakem farm.
+     Bracket umurnya sama dengan LABEL_UMUR di layar Pengaturan:
+     1-7, 8-14, 15-21, 22-28, dan 29 hari sampai panen. */
+  jatahGram(umur){
+    const j=(DB.cycle&&DB.cycle.jatah&&DB.cycle.jatah.length?DB.cycle.jatah:MASTER.pakemPakan)||[];
+    if(j.length<5)return null;
+    const g=+j[umur<=7?0:umur<=14?1:umur<=21?2:umur<=28?3:4];
+    return Number.isFinite(g)&&g>0?g:null;},
+  jatahKhususBatch(){return !!(DB.cycle&&DB.cycle.jatah&&DB.cycle.jatah.length);},
+  /* Kebutuhan pakan dari besok sampai hari target, dihitung hari per hari:
+     perkiraan bebek yang masih hidup x jatah gram menurut umurnya hari itu.
+     DIPERBAIKI: dulu memakai calc.feedAvg7(), rata-rata pemakaian 7 hari.
+     Rumus itu menghitung hari tanpa catatan sebagai 0 kg, sehingga pencatatan
+     yang bolong membuat proyeksi — dan HPP — turun sendiri padahal pakannya
+     tetap habis. Pakem adalah angka yang pemilik tetapkan sendiri dan tidak
+     bisa dirusak kelalaian pencatatan.
+     null = pakem belum lengkap, jadi kebutuhannya belum bisa dihitung. */
+  kebutuhanPakanSisa(){
+    if(!DB.cycle)return null;
+    const hari=calc.day(), target=+DB.cycle.targetDays||0, pop=calc.population();
+    if(!(pop>0)||!(target>hari))return {kg:0,hari:0};
+    const l=hari>0?calc.mortPct()/hari:0;                       // % mati per hari
+    const laju=Number.isFinite(l)&&l>0?l:0;
+    let kg=0,n=0;
+    for(let d=hari+1;d<=target;d++){
+      const g=calc.jatahGram(d);
+      if(g==null)return null;
+      kg+=Math.max(0,Math.round(pop*(1-laju/100*(d-hari))))*g/1000; n++;
+    }
+    return {kg,hari:n};},
+  /* Jenis pakan yang sedang dipakai batch ini, dari catatan pemakaian terakhir. */
+  jenisPakanBatch(){const r=(DB.feedRecords||[]).filter(x=>x.jenis);
+    return r.length?r[r.length-1].jenis:null;},
+  /* Harga pakan TERBARU dari nota pembelian — bukan rata-rata tertimbang.
+     Urutannya: nota terakhir untuk jenis yang dipakai batch ini, lalu nota
+     terakhir apa pun, lalu null. Tidak ada harga isian di sistem ini: setiap
+     harga berasal dari nota, jadi tidak ada angka karangan. */
+  hargaPakanTerbaru(){
+    const beli=(DB.feedPurchases||[]).filter(p=>p.status==='APPROVED'&&p.price>0)
+      .slice().sort((a,b)=>toDate(a.date)-toDate(b.date));
+    if(!beli.length)return null;
+    const jns=calc.jenisPakanBatch();
+    const sama=jns?beli.filter(p=>p.jenis===jns):[];
+    const p=sama.length?sama[sama.length-1]:beli[beli.length-1];
+    return {harga:+p.price,jenis:p.jenis||null,tanggal:p.date,vendor:p.vendor,
+            cocokJenis:!!sama.length,jenisBatch:jns};},
+  /* Apa yang belum cukup untuk memproyeksikan biaya sampai panen. Layar memakai
+     daftar ini untuk menulis PERLU DATA beserta sebabnya — bukan menampilkan
+     angka yang terlihat akurat padahal dasarnya belum ada. */
+  kurangDataProyeksi(){
+    if(!DB.cycle)return ['batch aktif'];
+    if(!calc.adaDataKeuangan())return ['data keuangan (tidak tersedia untuk peran ini)'];
+    const k=[];
+    if(!(+DB.cycle.targetDays>0))k.push('target hari panen');
+    if(!calc.targetBobot())k.push('target bobot panen batch ini');
+    if(!(calc.population()>0))k.push('bebek yang masih hidup');
+    if(!calc.hargaPakanTerbaru())k.push('harga pakan dari nota pembelian');
+    if(calc.kebutuhanPakanSisa()===null)k.push('pakem jatah pakan yang lengkap');
+    else if(!calc.jatahKhususBatch()&&calc.bawaan('pakemPakan'))k.push('pakem jatah pakan farm (sekarang masih angka awal, belum diisi pemilik)');
+    return k;},
+  /* Sisa biaya batch ini sampai panen — HANYA PAKAN.
+     DIPERBAIKI dua kali:
+     1. Dulu dikurangi stok pakan gudang. Itu salah: stok milik farm, bukan milik
+        batch ini, dan kalau catatan pakai melebihi catatan beli stok jadi minus
+        sehingga SELURUH kekurangan gudang dibebankan ke satu batch — pada data
+        uji menghasilkan Rp 903 juta untuk batch yang sisa harinya nol.
+     2. Dulu biaya non-pakan dibagi umur lalu dikalikan sisa hari, sehingga sekali
+        beli sekam Rp 350.000 di hari ke-16 menjadi perkiraan Rp 415.000 lagi
+        sampai panen. Biaya sekali bayar sekarang TIDAK diproyeksikan sama sekali.
+        Akibatnya proyeksi ini sedikit terlalu rendah, dan layar menulis begitu. */
+  projectedRemainingCost(){
+    if(!DB.cycle)return 0;
+    const n=calc.kebutuhanPakanSisa(), h=calc.hargaPakanTerbaru();
+    if(!n||!h||!(n.kg>0))return 0;
+    const v=n.kg*h.harga;
+    return Number.isFinite(v)&&v>0?v:0;},
+  hargaPakanDipakai(){const h=calc.hargaPakanTerbaru();return h?h.harga:0;},
+  projectedCostIsEstimate(){return calc.kurangDataProyeksi().length>0;},
+  /* Perkiraan jumlah ekor saat panen.
+     Tiga hal yang dulu salah dan sudah dibetulkan:
+       1. sisa hari tidak dibatasi -> lewat target, rumusnya MENAMBAH bebek
+       2. calc.day() bisa 0 -> pembagian nol -> NaN merambat ke laba, ROI, dan HPP
+       3. hasilnya bisa melebihi populasi sekarang, padahal bebek tidak bertambah */
+  projectedPop(){
+    const pop=calc.population();
+    if(!DB.cycle||!(pop>0))return pop>0?pop:0;
+    const hari=calc.day();
+    if(!(hari>0))return pop;                                   // hari ke-0: belum ada laju
+    const sisa=Math.max(0,(DB.cycle.targetDays||0)-hari);      // lewat target: sisa 0
+    if(sisa===0)return pop;
+    const laju=calc.mortPct()/hari;                            // % per hari
+    if(!Number.isFinite(laju)||laju<=0)return pop;
+    const sisaHidup=Math.round(pop*(1-laju/100*sisa));
+    return Math.max(0,Math.min(pop,sisaHidup));},              // tidak pernah melebihi populasi
   sum(){return DB.cycleSummary||null;},
+
+  /* ---------------- HPP: AKTUAL vs PROYEKSI ----------------
+     Dua angka yang sengaja TIDAK dicampur.
+
+     HPP AKTUAL = biaya yang benar-benar terjadi dibagi hasil panen yang benar-benar
+       ada. Tidak ada satu pun estimasi di dalamnya.
+         - populasi sudah habis  -> FINAL, ini angka penutup batch
+         - panen baru sebagian   -> SEBAGIAN; penyebutnya baru panen pertama
+                                    sedangkan pembilangnya biaya seluruh batch,
+                                    jadi angkanya tinggi. Benar sebagai fakta,
+                                    tapi BUKAN angka untuk menentukan harga.
+         - belum ada panen       -> null, layar menulis PERLU DATA
+
+     HPP PROYEKSI = (biaya nyata + sisa biaya sampai panen)
+                    / (kg sudah dipanen + perkiraan kg bebek yang masih hidup)
+       Inilah angka untuk keputusan harga selama batch masih berjalan. Kalau ada
+       data yang belum cukup, hasilnya null — tidak ada angka setengah jadi.
+
+     DIPERBAIKI (T-1): dulu hanya ada SATU angka. Pada panen sebagian ia membagi
+     biaya seluruh batch dengan kg panen pertama saja. Pada data uji #S2 (panen
+     100 dari 300 ekor) itu menghasilkan Rp 26.722/kg — di atas harga jual
+     Rp 25.500 — sehingga layar menyatakan batch yang sehat sedang rugi.
+     Hitungan yang benar untuk keputusan harga: Rp 11.059/kg. */
+  hppAktual(){
+    const s=DB.cycleSummary; if(!s)return null;
+    const kg=+s.harvestKg>0?+s.harvestKg:0, ekor=+s.harvestQty>0?+s.harvestQty:0;
+    if(!(kg>0)&&!(ekor>0))return null;                      // belum ada panen
+    const m=calc.modal(); if(!Number.isFinite(m))return null;
+    const sisaEkor=calc.population();
+    return {jenis:sisaEkor>0?'sebagian':'final',modal:m,kg,ekor,sisaEkor,
+            perKg:kg>0?m/kg:null,perEkor:ekor>0?m/ekor:null};},
+  hppProyeksi(){
+    if(!DB.cycle)return null;
+    if(calc.kurangDataProyeksi().length)return null;
+    const s=DB.cycleSummary;
+    const kgPanen=s&&+s.harvestKg>0?+s.harvestKg:0;
+    const ekorPanen=s&&+s.harvestQty>0?+s.harvestQty:0;
+    const tb=calc.targetBobot(), sisaEkor=calc.projectedPop();
+    const kg=kgPanen+sisaEkor*tb, ekor=ekorPanen+sisaEkor;
+    if(!(kg>0)||!(ekor>0))return null;
+    const nyata=calc.modal(); if(!Number.isFinite(nyata))return null;
+    const sisa=calc.projectedRemainingCost(), m=nyata+sisa;
+    if(!Number.isFinite(m))return null;
+    return {jenis:kgPanen>0?'sebagian':'estimasi',modal:m,modalNyata:nyata,sisaBiaya:sisa,
+            kg,ekor,kgPanen,ekorPanen,sisaEkor,perKg:m/kg,perEkor:m/ekor};},
+  /* HPP yang dipakai untuk BEP dan simulasi: kalau batch sudah habis dipanen pakai
+     yang aktual (sudah pasti); selama masih berjalan pakai yang proyeksi, karena
+     yang itulah yang menanggung seluruh bebek, bukan cuma panen pertama. */
+  hppBerlaku(){
+    const a=calc.hppAktual();
+    if(a&&a.jenis==='final')return {perKg:a.perKg,perEkor:a.perEkor,jenis:'final',
+      kg:a.kg,ekor:a.ekor,modal:a.modal};
+    const p=calc.hppProyeksi();
+    if(p)return {perKg:p.perKg,perEkor:p.perEkor,jenis:p.jenis,kg:p.kg,ekor:p.ekor,modal:p.modal};
+    return null;},
+  // Nama lama, masih dipakai KPI halaman Keuangan. Mengembalikan HPP yang berlaku.
+  hppKg(){const b=calc.hppBerlaku();return b&&b.perKg>0?{nilai:b.perKg,jenis:b.jenis,kg:b.kg}:null;},
+  hppEkor(){const b=calc.hppBerlaku();return b&&b.perEkor>0?{nilai:b.perEkor,jenis:b.jenis,ekor:b.ekor}:null;},
+  /* BEP harga jual per kg: di harga ini batch tidak untung tidak rugi. Selalu
+     turunan dari HPP yang berlaku — tidak ada harga jual tetap di dalam kode. */
+  bepKg(){return calc.hppKg();},
+  /* Selisih harga jual produk sekarang terhadap BEP. Positif = masih untung.
+     Harganya dari master Produk (calc.livePrice()), bisa diubah pemilik. */
+  marginKg(){const b=calc.bepKg(), h=calc.livePrice();
+    return b&&h>0?{bep:b.nilai,harga:h,selisih:h-b.nilai,jenis:b.jenis}:null;},
+  /* ---------------- Simulasi harga panen ----------------
+     Laba/rugi pada beberapa harga jual. Alat hitung what-if: harganya dari isian
+     pengguna, tidak disimpan dan tidak dikirim ke server. */
+  simulasiDasar(){const b=calc.hppBerlaku();
+    return b&&b.perKg>0&&b.kg>0?{kg:b.kg,ekor:b.ekor,hppKg:b.perKg,jenis:b.jenis,modal:b.modal}:null;},
+  simulasiHarga(daftar){
+    const d=calc.simulasiDasar(); if(!d)return null;
+    return (daftar||[]).map(x=>{const harga=+x||0, omzet=d.kg*harga;
+      return {harga,omzet,laba:omzet-d.modal,marginKg:harga-d.hppKg,
+              status:harga>d.hppKg?'untung':harga<d.hppKg?'rugi':'bep'};});},
+  /* ---------------- Riwayat harga pakan ----------------
+     Dari nota pembelian, per jenis pakan, berurutan tanggal, dengan selisih
+     terhadap nota sebelumnya. Harga tiap nota tersimpan di barisnya sendiri
+     (feed_transaction.price_per_kg) dan tabelnya append-only, jadi nota baru
+     tidak pernah mengubah biaya batch yang sudah lalu. */
+  riwayatHargaPakan(){
+    const beli=(DB.feedPurchases||[]).filter(p=>p.status==='APPROVED'&&p.price>0)
+      .slice().sort((a,b)=>toDate(a.date)-toDate(b.date));
+    const per={};
+    beli.forEach(p=>{const j=p.jenis||'TANPA JENIS';(per[j]=per[j]||[]).push(p);});
+    return Object.keys(per).sort().map(j=>{const n=per[j];
+      return {jenis:j,jmlNota:n.length,terbaru:+n[n.length-1].price,
+        nota:n.map((p,i)=>{const lalu=i>0?+n[i-1].price:null;
+          const d=lalu!=null?+p.price-lalu:null;
+          return {tanggal:p.date,harga:+p.price,qty:p.qty,vendor:p.vendor,ref:p.ref,
+                  selisih:d,pct:lalu?d/lalu*100:null,
+                  arah:d==null?'awal':d>0?'naik':d<0?'turun':'tetap'};}).reverse()};});},
   batches(){return DB.batches||[];},
   // Isi kandang menurut SEMUA batch (calc.population hanya batch yang dibuka)
   isiKandang(code){return (DB.barnPop||{})[code]||0;},

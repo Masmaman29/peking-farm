@@ -16,6 +16,7 @@ export async function migrate(log) {
   const files = (await fs.readdir(DIR)).filter(f => f.endsWith('.sql')).sort();
   const done = new Set((await rows('SELECT name FROM schema_migration')).map(r => r.name));
   const baseline = !!(await one(`SELECT to_regclass('public.farm') t`)).t;
+  const terpakai = [];
 
   for (const f of files) {
     if (done.has(f)) continue;
@@ -24,7 +25,25 @@ export async function migrate(log) {
       continue;
     }
     log.info(`migrasi DB: ${f}`);
-    await q(await fs.readFile(path.join(DIR, f), 'utf8'));
-    await q('INSERT INTO schema_migration(name) VALUES ($1) ON CONFLICT DO NOTHING', [f]);
+    const sql = await fs.readFile(path.join(DIR, f), 'utf8');
+
+    /* Isi berkas dan pencatatannya dikirim sebagai SATU perintah. Beberapa
+       pernyataan dalam satu query() dijalankan PostgreSQL di dalam satu
+       transaksi implisit, jadi berkas ini berlaku seluruhnya atau tidak sama
+       sekali — dan penandaan "sudah diterapkan" tidak bisa tertinggal di
+       belakang isinya. Tidak ada BEGIN eksplisit, supaya perilaku
+       ALTER TYPE ... ADD VALUE di 004 dan 007 tidak berubah. */
+    try {
+      await q(`${sql}\n;INSERT INTO schema_migration(name) VALUES ('${f.replace(/'/g, "''")}') ON CONFLICT DO NOTHING;`);
+    } catch (e) {
+      /* Sebutkan berkasnya. Tanpa ini, pesan errornya hanya menyebut
+         pernyataan SQL-nya dan tidak jelas migrasi mana yang gagal. */
+      throw new Error(`migrasi ${f} gagal: ${e.message}`);
+    }
+    terpakai.push(f);
   }
+
+  if (terpakai.length) log.info(`migrasi selesai: ${terpakai.join(', ')}`);
+  else log.info('migrasi: tidak ada yang baru');
+  return terpakai;
 }
