@@ -242,7 +242,17 @@ function kartuRingkasanFarm(){
  const popFarm=h.reduce((s,x)=>s+(+x.pop||0),0);
  const butuh=h.reduce((s,x)=>s+(x.jatahKg||0),0);
  const siklus=[...new Set(h.map(x=>x.code))];
- const stok=calc.feedStockTheory();const hari=calc.feedDaysLeft();
+ const stok=calc.feedStockTheory();
+ /* Berapa hari stok cukup. calc.feedDaysLeft() memakai rata-rata pemakaian 7 hari
+    dan sengaja mengembalikan null kalau belum ada pakan yang dicatat — jangan
+    diterjemahkan jadi "perlu pembelian", karena stoknya bisa saja penuh.
+    Kalau begitu, pakai dasar yang sama dengan tabel pakan di atas: stok dibagi
+    kebutuhan hari ini. Kalau dua-duanya belum ada dasarnya, katakan apa adanya. */
+ const hariPakai=calc.feedDaysLeft();
+ const hariButuh=butuh>0?stok/butuh:null;
+ const ketStok=hariPakai!=null?`cukup ±${num(hariPakai,0)} hari (dari pemakaian 7 hari)`
+   :hariButuh!=null?`cukup ±${num(hariButuh,0)} hari (dari kebutuhan hari ini)`
+   :'belum bisa dihitung — kebutuhan harian belum ada';
  const sel=(l,v,u,k)=>`<div style="border-left:3px solid var(--line);padding-left:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:5px">${l}</div><div><b class="num" style="font-size:24px">${v}</b>${u?` <small style="font-size:12px;color:var(--muted)">${u}</small>`:''}</div><div style="font-size:11.5px;color:var(--dim);margin-top:4px">${k}</div></div>`;
  return `<div class="card lingkup-blok">
   ${lingkup('farm','Ringkasan seluruh kandang')}
@@ -250,7 +260,7 @@ function kartuRingkasanFarm(){
    ${sel('Populasi seluruh farm',num(popFarm),'ekor',`${h.length} kandang aktif`)}
    ${sel('Kebutuhan pakan',butuh>0?num(butuh,1):'—','kg','hari ini, semua kandang')}
    ${sel('Siklus berjalan',siklus.length,'siklus',siklus.length<=4?siklus.join(', '):`${siklus.slice(0,4).join(', ')} dan ${siklus.length-4} lainnya`)}
-   ${sel('Stok pakan gudang',num(stok,1),'kg',hari>0?`cukup ±${num(hari,0)} hari`:'perlu pembelian')}
+   ${sel('Stok pakan gudang',num(stok,1),'kg',ketStok)}
   </div></div>`;}
 /* Kepala bagian untuk kartu KPI: menegaskan bahwa angka di bawahnya HANYA siklus
    yang sedang dibuka, bukan seluruh farm. */
