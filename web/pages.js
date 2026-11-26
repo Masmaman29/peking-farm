@@ -198,22 +198,85 @@ const approvalCard=(n=3)=>{const list=calc.pendingApprovals().slice(0,n);return 
 
 /* ---------- Laporan kematian: semua kandang, per umur, per penyebab ---------- */
 function batang(n,maks,warna){const w=maks>0?Math.max(2,Math.round(n/maks*100)):0;return `<div style="flex:1;min-width:60px;height:8px;border-radius:6px;background:rgba(255,255,255,.08);overflow:hidden"><i style="display:block;height:100%;width:${w}%;background:${warna||'var(--soft)'}"></i></div>`;}
+/* Kartu mortalitas — permintaan Abdur 26 Nov 2026.
+   Menggantikan satu kalimat yang dulu menumpang di kotak hijau "Balance OK".
+   Isinya tiga hal yang sebelumnya tidak ada di mana pun:
+     - mortalitas MURNI (afkir tidak ikut) dengan warna sesuai target
+     - berapa hari berturut-turut kematian di atas batas
+     - kerugian dalam rupiah, bukan cuma jumlah ekor */
+function kartuMortalitas(barn){
+  const p=calc.matiPisah(barn);
+  if(!p.total)return `<div class="card" style="margin-bottom:14px"><div class="card-h"><h3>Mortalitas</h3></div>
+   <div class="alert ok">${ic('check',16)}<div><b>Belum ada kematian tercatat</b>Semua bebek yang masuk masih hidup menurut catatan.</div></div></div>`;
+  const tgt=+MASTER.targetMortalitasPct;
+  const mp=calc.mortPctMurni(barn), ap=calc.afkirPct(barn);
+  const lewat=!calc.bawaan('targetMortalitasPct')&&tgt>0&&mp!=null&&mp>tgt;
+  const beruntun=calc.matiBeruntun(barn);
+  const rugi=calc.rugiMati(barn);   // lingkupnya ikut filter kandang, sama dengan kartu ini
+  const angka=(l,v,u,k,warna)=>`<div style="border-left:3px solid ${warna||'var(--line)'};padding-left:14px">
+    <div style="font-size:12px;color:var(--muted);margin-bottom:5px">${l}</div>
+    <div><b class="num" style="font-size:24px${warna?`;color:${warna}`:''}">${v}</b>${u?` <small style="font-size:12px;color:var(--muted)">${u}</small>`:''}</div>
+    <div style="font-size:11.5px;color:var(--dim);margin-top:4px">${k}</div></div>`;
+  return `<div class="card" style="margin-bottom:14px">
+   <div class="card-h"><h3>Mortalitas${barn?' · '+barnName(barn):''}</h3><span class="sub">afkir dihitung terpisah</span></div>
+   <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:20px">
+    ${angka('Mati sendiri',num(p.mati),'ekor',mp==null?'&mdash;':`${pct(mp)} dari DOD masuk`,lewat?'#F2C46B':'var(--soft)')}
+    ${angka('Afkir (disingkirkan)',num(p.afkir),'ekor',ap==null?'&mdash;':`${pct(ap)} dari DOD masuk`,'')}
+    ${angka('Berkurang seluruhnya',num(p.total),'ekor','mati + afkir','')}
+    ${tgt>0&&!calc.bawaan('targetMortalitasPct')?angka('Target Bapak','&lt; '+num(tgt,1),'%','hanya untuk yang mati sendiri',''):''}
+   </div>
+   ${mp==null?'':lewat
+     ? `<div class="alert warn" style="margin-top:14px">${ic('alert',16)}<div><b>Mortalitas ${pct(mp)} — di atas target ${num(tgt,1)}%</b>Ini angka mati sendiri saja; ${num(p.afkir)} ekor afkir tidak ikut dihitung. Periksa penyebab terbanyak di tab Laporan Kematian.</div></div>`
+     : `<div class="alert ok" style="margin-top:14px">${ic('check',16)}<div><b>Mortalitas ${pct(mp)} — masih di bawah target${tgt>0?' '+num(tgt,1)+'%':''}</b>Afkir ${num(p.afkir)} ekor tidak ikut dihitung di angka ini.</div></div>`}
+   ${beruntun?`<div class="alert warn" style="margin-top:10px">${ic('clock',16)}<div><b>${beruntun.hari} hari berturut-turut kematian di atas batas ${beruntun.batas} ekor/hari</b>Sejak ${fmtDate(beruntun.sejak)}, total ${num(beruntun.ekor)} ekor. Bocor pelan seperti ini sering lolos dari grafik karena tidak terlihat sebagai lonjakan.</div></div>`:''}
+   ${rugi?kerugianMati(rugi):''}
+  </div>`;}
+
+/* Kerugian kematian dalam rupiah. Selalu menyebutkan dasar hitungannya, dan
+   menolak menampilkan angka kalau dasarnya belum lengkap. */
+function kerugianMati(r){
+  if(r.kosong)return '';
+  if(r.kurang)return `<div class="alert info" style="margin-top:10px">${ic('money',16)}<div><b>Kerugian belum bisa dihitung dalam rupiah</b>${r.kurang==='harga DOD belum ada'?'Harga DOD batch ini belum terisi.':'Belum ada nota pembelian pakan, jadi nilai pakan yang sudah dimakan belum bisa dihitung.'} Jumlah ekornya tetap benar di atas.</div></div>`;
+  const sel=(l,v,k)=>`<div><div style="font-size:12px;color:var(--muted)">${l}</div><div class="num" style="font-size:19px;font-weight:700;margin-top:3px">${v}</div><div style="font-size:11.5px;color:var(--dim);margin-top:3px">${k}</div></div>`;
+  return `<div style="margin-top:14px;background:rgba(242,147,144,.07);border:1px solid rgba(242,147,144,.25);border-radius:12px;padding:16px 18px">
+   <div style="font-size:14px;font-weight:700;color:#F0B9AC;margin-bottom:12px">Perkiraan kerugian ${num(r.ekor)} ekor yang mati</div>
+   <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:18px">
+    ${sel('Harga bibit hangus',rp(r.dod),`${num(r.ekor)} ekor × ${rp(r.hargaDod)}`)}
+    ${sel('Pakan yang sudah dimakan',rp(r.pakan),`${num(r.pakanKg,1)} kg × ${rp(r.hargaPakan)}/kg`)}
+    ${sel('Total','<b style="color:#F29390">'+rp(r.total)+'</b>','bibit + pakan terbuang')}
+   </div>
+   <small style="display:block;margin-top:12px;color:var(--dim)">Perkiraan, bukan angka pasti. Pakan dihitung dari pakem jatah per umur yang Bapak atur sendiri dikali harga nota pakan terbaru — bebek yang mati hari ke-22 sudah makan 22 hari pakan, yang mati hari ke-2 belum.${r.tanpaPakem?` ${num(r.tanpaPakem)} ekor tidak ikut dihitung pakannya karena pakem jatah untuk umur itu belum diisi.`:''}${r.ekorAfkir?` Afkir ${num(r.ekorAfkir)} ekor tidak dihitung di sini.`:''}</small>
+  </div>`;}
+
 function laporanMati(){
  const h=(DB.harian||[]).map(x=>({...x,persen:x.masuk>0?x.mati/x.masuk*100:0})).sort((a,b)=>b.persen-a.persen||b.mati-a.mati);
  const mu=DB.mortUmur||[];const total=mu.reduce((s,x)=>s+x.n,0);
- const kel=[[1,7],[8,14],[15,21],[22,28],[29,35],[36,999]].map(([a,b])=>({label:b===999?'Umur 36 hari ke atas':`Umur ${a}\u2013${b} hari`,n:mu.filter(x=>x.umur>=a&&x.umur<=b).reduce((s,x)=>s+x.n,0)}));
+ const kel=[[1,7],[8,14],[15,21],[22,28],[29,35],[36,999]].map(([a,b])=>{
+   const isi=mu.filter(x=>x.umur>=a&&x.umur<=b);
+   return {label:b===999?'Umur 36 hari ke atas':`Umur ${a}\u2013${b} hari`,
+     n:isi.reduce((s,x)=>s+x.n,0),
+     mati:isi.reduce((s,x)=>s+(+x.mati||0),0),
+     afkir:isi.reduce((s,x)=>s+(+x.afkir||0),0)};});
  const maksKel=Math.max(0,...kel.map(k=>k.n));
  const sb=DB.mortSebab||[];const maksSb=Math.max(0,...sb.map(x=>x.n));
  const kosong='<div class="alert info">Belum ada kematian yang tercatat.</div>';
  return `<div class="card" style="margin-bottom:14px"><div class="card-h"><h3>Semua Kandang</h3><span class="sub">diurutkan dari kematian tertinggi</span></div>
   ${h.length?`<div class="tbl-wrap"><table><thead><tr><th>Kandang</th><th>Batch</th><th class="r">Umur</th><th class="r">Masuk</th><th class="r">Mati</th><th class="r">Hari ini</th><th class="r">%</th><th></th></tr></thead><tbody>${h.map(x=>`<tr><td><b>${x.barnName}</b></td><td>${x.code}</td><td class="r num">${x.umur} hari</td><td class="r num">${num(x.masuk)}</td><td class="r num"><b>${num(x.mati)}</b></td><td class="r num">${x.matiHariIni||'\u2014'}</td><td class="r num">${pct(x.persen)}${!calc.bawaan('targetMortalitasPct')&&MASTER.targetMortalitasPct>0&&x.persen>MASTER.targetMortalitasPct?' '+badge('warn','DI ATAS TARGET'):''}</td><td style="min-width:90px"><div style="display:flex">${batang(x.persen,Math.max(...h.map(y=>y.persen)),'#F29390')}</div></td></tr>`).join('')}</tbody></table></div>`:'<div class="alert info">Belum ada kandang yang berisi ternak.</div>'}</div>
  <div class="grid g-2"><div class="card"><div class="card-h"><h3>Kematian per Umur</h3><span class="sub">semua batch · ${num(total)} ekor</span></div>
-  ${total?`<div style="display:flex;flex-direction:column;gap:10px">${kel.map(k=>`<div style="display:flex;align-items:center;gap:10px"><span style="width:150px;flex:none;font-size:13px">${k.label}</span>${batang(k.n,maksKel,'#F29390')}<b class="num" style="width:92px;text-align:right;flex:none">${num(k.n)} · ${pct(k.n/total*100,0)}</b></div>`).join('')}</div><small style="display:block;margin-top:12px;color:var(--dim)">Kalau kematian menumpuk di satu rentang umur, di situlah yang perlu diperiksa.</small>`:kosong}</div>
+  ${total?`<div style="display:flex;flex-direction:column;gap:10px">${kel.map(k=>`<div style="display:flex;align-items:center;gap:10px"><span style="width:150px;flex:none;font-size:13px">${k.label}</span>${batang(k.n,maksKel,'#F29390')}<b class="num" style="width:124px;text-align:right;flex:none">${num(k.n)} · ${pct(k.n/total*100,0)}${k.afkir?`<br><small style="font-weight:400;color:var(--dim)">${num(k.afkir)} afkir</small>`:''}</b></div>`).join('')}</div><small style="display:block;margin-top:12px;color:var(--dim)">Kalau kematian menumpuk di satu rentang umur, di situlah yang perlu diperiksa. Angka besar sudah termasuk afkir; yang afkir disebut terpisah di bawahnya.</small>`:kosong}</div>
  <div class="card"><div class="card-h"><h3>Penyebab Terbanyak</h3><span class="sub">semua batch</span></div>
-  ${sb.length?`<div style="display:flex;flex-direction:column;gap:10px">${sb.map(x=>`<div style="display:flex;align-items:center;gap:10px"><span style="width:150px;flex:none;font-size:13px">${esc(x.sebab)}</span>${batang(x.n,maksSb)}<b class="num" style="width:92px;text-align:right;flex:none">${num(x.n)} · ${pct(x.n/total*100,0)}</b></div>`).join('')}</div>`:kosong}</div></div>`;}
+  ${sb.length?`<div style="display:flex;flex-direction:column;gap:10px">${sb.map(x=>`<div style="display:flex;align-items:center;gap:10px"><span style="width:150px;flex:none;font-size:13px">${esc(x.sebab)}${x.kind==='AFKIR'?' '+badge('neutral','AFKIR'):''}</span>${batang(x.n,maksSb)}<b class="num" style="width:92px;text-align:right;flex:none">${num(x.n)} · ${pct(x.n/total*100,0)}</b></div>`).join('')}</div>`:kosong}</div></div>`;}
 
 /* ---------- Pakan hari ini per kandang — dari catatan farm sendiri, tanpa angka standar ---------- */
 const LABEL_UMUR=['Umur 1–7 hari','Umur 8–14 hari','Umur 15–21 hari','Umur 22–28 hari','Umur 29 hari – panen'];
+/* Penyebab kematian — SATU daftar untuk semua form.
+   Sebelum 26 Nov 2026 form anak kandang dan form Owner punya daftar sendiri
+   yang tidak sama ("Sakit" vs "Sakit (diare)" dan "Sakit (pernapasan)").
+   Akibatnya penyakit yang sama terpecah jadi beberapa baris di laporan
+   "Penyebab Terbanyak" dan tidak pernah terlihat sebagai yang terbanyak.
+   Kalau menambah sebab baru, tambahkan DI SINI saja. */
+const SEBAB_MATI=['Belum diketahui','Lemah / kerdil','Terinjak','Sakit (diare)','Sakit (pernapasan)','Sakit (lainnya)','Kaki lumpuh','Predator','Lainnya'];
+const opsiSebab=(pilih)=>SEBAB_MATI.map(s=>`<option${s===pilih?' selected':''}>${s}</option>`).join('');
 function jatahInputs(vals,ro){return `<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">${LABEL_UMUR.map((l,i)=>`<div class="f"><label>${l}</label><input name="jatah_${i}" type="number" step="1" min="0" max="1000" value="${vals&&vals[i]!=null?vals[i]:''}" placeholder="gram/ekor/hari" ${ro?'disabled class="ro"':''}></div>`).join('')}</div>`;}
 function bacaJatah(v){const g=[0,1,2,3,4].map(i=>v['jatah_'+i]);return g.every(x=>x!==undefined&&String(x).trim()!=='')?g.map(Number):null;}
 function perluTimbang(x){const j=+MASTER.jadwalTimbangHari||0;if(!j)return false;return x.hariSejakTimbang==null?x.umur>=j:x.hariSejakTimbang>=j;}
@@ -817,11 +880,24 @@ function pgPopulasi(){const bf=state.barn==='ALL'?null:state.barn;const b=calc.p
  return pageHead('Populasi & Mortalitas','Populasi tidak pernah diubah langsung. Setiap angka berasal dari transaksi: DOD masuk, transfer, kematian, panen, penjualan.',`${seg([['ALL','Semua'],...barnsWorking().map(b=>[b.id,b.name])],state.barn,'barn')}`)+
  `<div class="card" style="margin-bottom:14px"><div class="card-h"><h3>Balance Populasi ${state.barn==='ALL'?'':'· '+barnName(state.barn)}</h3></div>
   <div class="flow"><div class="n"><b class="num">${num(b.dod)}</b><small>Populasi awal (DOD)</small></div><span class="op">+</span><div class="n"><b class="num">${num(b.tIn)}</b><small>Transfer masuk</small></div><span class="op">−</span><div class="n neg"><b class="num">${num(b.mati)}</b><small>Kematian</small></div><span class="op">−</span><div class="n neg"><b class="num">${num(b.panen)}</b><small>Panen</small></div><span class="op">−</span><div class="n neg"><b class="num">${num(b.jual)}</b><small>Penjualan</small></div><span class="op">−</span><div class="n neg"><b class="num">${num(b.tOut)}</b><small>Transfer keluar</small></div><span class="op">=</span><div class="n res"><b class="num">${num(b.akhir)}</b><small>Populasi akhir</small></div></div>
-  ${(()=>{const h=b.dod+b.tIn-b.mati-b.panen-b.jual-b.tOut;if(h!==b.akhir)return `<div class="alert warn" style="margin-top:14px">${ic('alert',16)}<div><b>Balance tidak cocok</b>Hasil hitung ${num(h)} ekor, populasi akhir ${num(b.akhir)} ekor — selisih ${num(Math.abs(h-b.akhir))} ekor. Laporkan dulu, jangan dipakai sebagai dasar keputusan.</div></div>`;return ''})()}<div class="alert ok" style="margin-top:14px">${ic('check',16)}<div><b>Balance OK</b>Jumlah transaksi sama dengan populasi akhir. Mortalitas kumulatif ${pct(calc.mortPct())} (target &lt; ${MASTER.targetMortalitasPct}%).</div></div></div>
+  ${(()=>{
+    /* DIPERBAIKI 26 Nov 2026 — dua cacat sekaligus.
+       1) Kotak hijau "Balance OK" dulu dicetak TANPA SYARAT, jadi kalau
+          balance tidak cocok layar menampilkan peringatan merah DAN kotak
+          hijau bersamaan — dua jawaban bertentangan di layar yang sama.
+       2) Verdict mortalitas menumpang di kotak hijau itu, sehingga
+          mortalitas 29,5% terhadap target 5% diumumkan dengan tanda centang
+          hijau. Sekarang dipisah: balance soal hitungan cocok atau tidak,
+          mortalitas soal bagus atau jelek — masing-masing dengan warnanya. */
+    const h=b.dod+b.tIn-b.mati-b.panen-b.jual-b.tOut;
+    return h!==b.akhir
+      ? `<div class="alert warn" style="margin-top:14px">${ic('alert',16)}<div><b>Balance tidak cocok</b>Hasil hitung ${num(h)} ekor, populasi akhir ${num(b.akhir)} ekor — selisih ${num(Math.abs(h-b.akhir))} ekor. Laporkan dulu, jangan dipakai sebagai dasar keputusan.</div></div>`
+      : `<div class="alert ok" style="margin-top:14px">${ic('check',16)}<div><b>Balance cocok</b>Jumlah seluruh transaksi sama dengan populasi akhir, jadi angka di halaman ini bisa dipakai.</div></div>`;})()}</div>
+ ${kartuMortalitas(bf)}
  <div class="grid g-2" style="margin-bottom:14px">${chartCard('Populasi Harian','ch-pop',rangeSeg())}${chartCard('Mortalitas Harian','ch-mort','','', 'Batas normal '+MASTER.batasMortalitasHarian+' ekor/hari')}</div>
  <div class="tabs"><button class="${tab==='ledger'?'active':''}" data-act="tab" data-v="ledger">Ledger Transaksi</button><button class="${tab==='mort'?'active':''}" data-act="tab" data-v="mort">Catatan Kematian</button><button class="${tab==='lap'?'active':''}" data-act="tab" data-v="lap">Laporan Kematian</button></div>
  ${tab==='lap'?laporanMati():tab==='ledger'?`<div class="card"><div class="tbl-wrap"><table><thead><tr><th>Waktu</th><th>Jenis</th><th>Kandang</th><th class="r">Jumlah</th><th class="r">Saldo</th><th>Referensi</th><th>User</th><th>Status</th></tr></thead><tbody>${(()=>{let run=0;return DB.popTx.filter(t=>state.barn==='ALL'||t.barn===state.barn).slice().sort((a,b)=>a.date-b.date).map(t=>{run+=t.qty;return `<tr><td class="num">${fmtDT(t.date)}</td><td>${badge(t.qty>0?'ok':'danger',t.type.replace('_',' '))}</td><td>${barnName(t.barn)}</td><td class="r num" style="color:${t.qty>0?'var(--soft)':'#F29390'}">${t.qty>0?'+':''}${t.qty}</td><td class="r num"><b>${run}</b></td><td><code style="font-size:11px">${t.ref}</code></td><td>${userName(t.user)}</td><td>${t.locked?badge('neutral','TERKUNCI'):stBadge('RECORDED')}</td></tr>`;}).reverse().join('');})()}</tbody></table></div></div>`:
- `<div class="card"><div class="card-h"><h3>Catatan Kematian</h3>${state.user.role!=='ANAK_KANDANG'?`<button class="btn sm" data-act="modal" data-m="mort">${ic('plus',14)} Catat kematian</button>`:''}</div><div class="tbl-wrap"><table><thead><tr><th>Tanggal</th><th>Kandang</th><th class="r">Jumlah</th><th>Penyebab</th><th>Bukti</th><th>User</th><th>Status</th><th></th></tr></thead><tbody>${DB.mortality.filter(m=>state.barn==='ALL'||m.barn===state.barn).slice().reverse().map(m=>`<tr><td class="num">${fmtDT(m.date)}</td><td>${barnName(m.barn)}</td><td class="r num"><b>${m.qty}</b>${m.qty>=MASTER.batasMortalitasHarian?' '+badge('warn','WARNING'):''}</td><td>${m.cause}</td><td>${photoChip(m.photo)}${fotoAsal(m.photoSource,m.photo)}</td><td>${userName(m.user)}</td><td>${m.locked?badge('neutral','TERKUNCI'):stBadge(m.status)}</td><td><button class="btn ghost sm" data-act="modal" data-m="correction" data-type="MORT" data-id="${m.id}">Ajukan koreksi</button></td></tr>`).join('')}</tbody></table></div></div>`}
+ `<div class="card"><div class="card-h"><h3>Catatan Kematian</h3>${state.user.role!=='ANAK_KANDANG'?`<button class="btn sm" data-act="modal" data-m="mort">${ic('plus',14)} Catat kematian</button>`:''}</div><div class="tbl-wrap"><table><thead><tr><th>Tanggal</th><th>Kandang</th><th class="r">Jumlah</th><th>Jenis</th><th>Penyebab</th><th>Bukti</th><th>User</th><th>Status</th><th></th></tr></thead><tbody>${DB.mortality.filter(m=>state.barn==='ALL'||m.barn===state.barn).slice().reverse().map(m=>`<tr><td class="num">${fmtDT(m.date)}</td><td>${barnName(m.barn)}</td><td class="r num"><b>${m.qty}</b>${(m.kind||'MATI')==='MATI'&&m.qty>=MASTER.batasMortalitasHarian?' '+badge('warn','WARNING'):''}</td><td>${(m.kind||'MATI')==='AFKIR'?badge('neutral','AFKIR'):badge('danger','MATI')}</td><td>${m.cause}</td><td>${photoChip(m.photo)}${fotoAsal(m.photoSource,m.photo)}</td><td>${userName(m.user)}</td><td>${m.locked?badge('neutral','TERKUNCI'):stBadge(m.status)}</td><td><button class="btn ghost sm" data-act="modal" data-m="correction" data-type="MORT" data-id="${m.id}">Ajukan koreksi</button></td></tr>`).join('')}</tbody></table></div></div>`}
  `;}
 
 function feedVersions(r){if(!r.versions.length)return '';return `<div style="margin-top:6px">${r.versions.map((v,i)=>`<div class="ver ${i===r.versions.length-1?'active':''}"><s>${i===0?r.kg:r.versions[i-1].kg} kg</s> → <b>${v.kg} kg</b> · ${v.reason} · disetujui ${userName(v.approvedBy)} ${fmtDT(v.date)}</div>`).join('')}</div>`;}

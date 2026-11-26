@@ -124,15 +124,24 @@ export const ACTIONS = {
   },
   async MORTALITY(c, p, user, file) {
     need(user, ['OWNER', 'MANAGER', 'ANAK_KANDANG']);
-    const v = z.object({ qty: z.number().int().positive().max(500), barn: z.string(), cause: z.string().min(1), note: z.string().optional() }).parse(p);
+    /* kind: MATI (mati sendiri) atau AFKIR (sengaja disingkirkan). Lihat
+       migrasi 024 — dicampur, persentase mortalitas tidak bisa dibaca.
+       Default MATI supaya pemanggil lama tetap jalan apa adanya. */
+    const v = z.object({ qty: z.number().int().positive().max(500), barn: z.string(), cause: z.string().min(1),
+      kind: z.enum(['MATI', 'AFKIR']).optional(), note: z.string().optional() }).parse(p);
     await requirePhoto(c, file);
+    const kind = v.kind || 'MATI';
     const b = await barnId(c, v.barn, user); const cy = await cycleOfBarn(c, b, v.barn);
     const pop = (await c.query('SELECT population FROM v_population WHERE cycle_id=$1 AND barn_id=$2', [cy.id, b])).rows[0]?.population || 0;
-    if (v.qty > pop) throw new ActionError(`Jumlah mati (${v.qty}) melebihi populasi kandang (${pop}).`);
-    const r = await c.query(`INSERT INTO mortality(cycle_id,barn_id,qty,cause,note,occurred_at,created_by) VALUES ($1,$2,$3,$4,$5,now(),$6) RETURNING id`, [cy.id, b, v.qty, v.cause, v.note || null, user.id]);
+    const kata = kind === 'AFKIR' ? 'Afkir' : 'Mati';
+    if (v.qty > pop) throw new ActionError(`Jumlah ${kata.toLowerCase()} (${v.qty}) melebihi populasi kandang (${pop}).`);
+    const r = await c.query(`INSERT INTO mortality(cycle_id,barn_id,qty,cause,kind,note,occurred_at,created_by) VALUES ($1,$2,$3,$4,$5,$6,now(),$7) RETURNING id`, [cy.id, b, v.qty, v.cause, kind, v.note || null, user.id]);
     const photo = await saveAttachment(c, file, 'mortality', r.rows[0].id, 'kematian', user);
-    const cfg = await config(c); const warn = v.qty >= +cfg.batas_mortalitas_harian;
-    await audit(c, user.id, 'CREATE', 'mortality', `Bebek mati ${v.qty} ekor — Kandang ${v.barn} — ${v.cause}${warn ? ' (WARNING)' : ''}`, r.rows[0].id);
+    /* Batas harian hanya berlaku untuk MATI. Afkir itu keputusan peternak,
+       bukan gejala — memperingatkannya hanya membuat peringatan jadi bising
+       dan lama-lama diabaikan. */
+    const cfg = await config(c); const warn = kind === 'MATI' && v.qty >= +cfg.batas_mortalitas_harian;
+    await audit(c, user.id, 'CREATE', 'mortality', `Bebek ${kata.toLowerCase()} ${v.qty} ekor — Kandang ${v.barn} — ${v.cause}${warn ? ' (WARNING)' : ''}`, r.rows[0].id);
     if (warn) await notify(c, ['OWNER', 'MANAGER'], 'mortality_abnormal', `Kematian ${v.qty} ekor di Kandang ${v.barn}`, 'Di atas batas harian — perlu verifikasi', '/populasi');
     return { id: r.rows[0].id, photo, warning: warn };
   },

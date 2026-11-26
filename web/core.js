@@ -365,6 +365,87 @@ const calc = {
      terhadap nota sebelumnya. Harga tiap nota tersimpan di barisnya sendiri
      (feed_transaction.price_per_kg) dan tabelnya append-only, jadi nota baru
      tidak pernah mengubah biaya batch yang sudah lalu. */
+  /* ---- Mati vs afkir (migrasi 024) ----
+     Dua-duanya mengurangi populasi dan dua-duanya rugi, tapi artinya beda:
+     mati itu gejala, afkir itu keputusan peternak. Dicampur, persentase
+     mortalitas tidak bisa dipakai menilai apa pun. */
+  matiPisah(barn){
+    const m=(DB.mortality||[]).filter(x=>!barn||x.barn===barn);
+    const j=k=>m.filter(x=>(x.kind||'MATI')===k).reduce((s,x)=>s+(+x.qty||0),0);
+    return {mati:j('MATI'),afkir:j('AFKIR'),total:j('MATI')+j('AFKIR')};},
+  /* Persentase mortalitas MURNI — afkir tidak ikut. Pembaginya DOD masuk. */
+  mortPctMurni(barn){
+    const dod=calc.popBalance(barn).dod;
+    if(!(dod>0))return null;
+    return calc.matiPisah(barn).mati/dod*100;},
+  afkirPct(barn){
+    const dod=calc.popBalance(barn).dod;
+    if(!(dod>0))return null;
+    return calc.matiPisah(barn).afkir/dod*100;},
+  /* ---- Berapa hari berturut-turut kematian di atas batas ----
+     Bocor pelan 4 ekor/hari selama dua minggu lebih merugikan daripada satu
+     lonjakan 50 ekor, tapi yang terlihat di grafik cuma lonjakannya. Hitung
+     mundur dari hari terakhir yang ada catatannya. Afkir tidak dihitung —
+     itu keputusan, bukan gejala. */
+  matiBeruntun(barn){
+    const batas=+MASTER.batasMortalitasHarian;
+    if(!(batas>0)||!DB.cycle)return null;
+    const z=MASTER.zonaWaktu||DB.zonaWaktu||'Asia/Jakarta';
+    const hari=d=>{try{return new Intl.DateTimeFormat('en-CA',{timeZone:z,year:'numeric',month:'2-digit',day:'2-digit'}).format(d);}catch(e){return new Date(d).toISOString().slice(0,10);}};
+    const perHari={};
+    (DB.mortality||[]).filter(x=>(!barn||x.barn===barn)&&(x.kind||'MATI')==='MATI')
+      .forEach(x=>{const k=hari(toDate(x.date));perHari[k]=(perHari[k]||0)+(+x.qty||0);});
+    const tgl=Object.keys(perHari).sort();
+    if(!tgl.length)return null;
+    // telusuri mundur dari hari terakhir yang ada catatannya, hari demi hari
+    let n=0,total=0;
+    const akhir=new Date(tgl[tgl.length-1]+'T00:00:00Z');
+    for(let i=0;;i++){
+      const d=new Date(akhir.getTime()-i*86400000).toISOString().slice(0,10);
+      const q=perHari[d];
+      if(q==null||q<=batas)break;
+      n++;total+=q;
+      if(i>400)break;
+    }
+    return n>=2?{hari:n,ekor:total,batas,sejak:new Date(akhir.getTime()-(n-1)*86400000)}:null;},
+  /* ---- Kerugian kematian dalam rupiah ----
+     Bebek yang mati hari ke-2 cuma rugi harga DOD. Yang mati hari ke-22 sudah
+     makan 22 hari pakan — ruginya berkali lipat. Angka ini PERKIRAAN dan
+     dasarnya disebutkan di layar: harga DOD dari nota, pakan dari pakem jatah
+     Bapak sendiri dikali harga pakan terbaru. Null kalau dasarnya belum ada,
+     bukan diisi tebakan. */
+  rugiMati(barn){
+    if(!DB.cycle)return null;
+    const hargaDod=+DB.cycle.dodPrice;
+    const hargaPakan=calc.hargaPakanDipakai();
+    if(!(hargaDod>0))return {kurang:'harga DOD belum ada'};
+    /* LINGKUP: siklus yang sedang dibuka saja, sama dengan kartu di atasnya.
+       JANGAN memakai DB.mortUmur — itu seluruh farem lintas siklus, dan
+       memakainya di sini membuat satu kartu memuat dua lingkup berbeda
+       (pernah terjadi 26 Nov 2026: kartu siklus 10 ekor, kerugian 2.254 ekor).
+       DB.mortality sudah terbatas pada siklus yang dibuka, dan umurnya
+       dihitung dari tanggal DOD siklus itu lewat dayOf(). */
+    const catatan=(DB.mortality||[]).filter(x=>!barn||x.barn===barn)
+      .map(x=>({umur:dayOf(toDate(x.date)),n:+x.qty||0,kind:x.kind||'MATI'}))
+      .filter(x=>x.umur>0&&x.n>0&&x.kind==='MATI');
+    if(!catatan.length)return {kosong:true};
+    // pakan kumulatif yang sudah dimakan seekor bebek sampai umur tertentu
+    const kum={};let jalan=0;
+    const maks=Math.max(...catatan.map(x=>x.umur));
+    for(let d=1;d<=maks;d++){const g=calc.jatahGram(d);if(g==null){kum[d]=null;continue;}jalan+=g/1000;kum[d]=jalan;}
+    let dod=0,pakanKg=0,tanpaPakem=0,ekor=0;
+    const ekorAfkir=calc.matiPisah(barn).afkir;
+    catatan.forEach(x=>{
+      ekor+=x.n;
+      dod+=x.n*hargaDod;
+      const k=kum[x.umur];
+      if(k==null)tanpaPakem+=x.n;else pakanKg+=x.n*k;
+    });
+    const pakan=hargaPakan>0?pakanKg*hargaPakan:null;
+    return {ekor,ekorAfkir,dod,pakanKg,pakan,
+      total:pakan==null?null:dod+pakan,
+      hargaDod,hargaPakan,tanpaPakem,
+      kurang:pakan==null?'harga pakan belum ada nota':null};},
   riwayatHargaPakan(){
     /* Urutan dari server sudah kronologis (tanggal, lalu waktu catat, lalu id).
        Sort di sini HANYA pada tanggal, dan Array.sort stabil sejak ES2019, jadi

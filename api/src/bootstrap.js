@@ -87,10 +87,16 @@ export async function buildBootstrap(user, batchCode) {
       COALESCE((SELECT SUM(m.qty) FROM mortality m WHERE ${MATI} AND (m.occurred_at AT TIME ZONE 'Asia/Jakarta')::date = ${HARI}),0)::int AS mati_hari_ini
     FROM v_batch_aktif v JOIN cycle c ON c.id = v.cycle_id ORDER BY v.dod_date, v.barn_code`),
     rows(`
-    SELECT ((m.occurred_at AT TIME ZONE 'Asia/Jakarta')::date - c.dod_date) + 1 AS umur, SUM(m.qty)::int AS n
+    /* Kematian per umur, dipecah mati vs afkir (migrasi 024). Umur penting
+       untuk biaya: bebek yang mati hari ke-22 sudah makan 22 hari pakan. */
+    SELECT ((m.occurred_at AT TIME ZONE 'Asia/Jakarta')::date - c.dod_date) + 1 AS umur,
+           SUM(m.qty)::int AS n,
+           COALESCE(SUM(m.qty) FILTER (WHERE m.kind='MATI'),0)::int  AS mati,
+           COALESCE(SUM(m.qty) FILTER (WHERE m.kind='AFKIR'),0)::int AS afkir
       FROM mortality m JOIN cycle c ON c.id = m.cycle_id
      WHERE m.deleted_at IS NULL AND m.status<>'SUPERSEDED' GROUP BY 1 ORDER BY 1`),
-    rows(`SELECT cause, SUM(qty)::int AS n FROM mortality WHERE deleted_at IS NULL AND status<>'SUPERSEDED' GROUP BY cause ORDER BY 2 DESC`),
+    rows(`SELECT cause, kind::text AS kind, SUM(qty)::int AS n FROM mortality
+           WHERE deleted_at IS NULL AND status<>'SUPERSEDED' GROUP BY cause, kind ORDER BY 3 DESC`),
     one(`SELECT COALESCE(SUM(qty_kg),0) AS kg FROM feed_transaction WHERE deleted_at IS NULL AND ((type='PURCHASE' AND status='APPROVED') OR (type='USAGE' AND status IN ('RECORDED','APPROVED')) OR (type='ADJUSTMENT' AND status='APPROVED'))`),
     /* Stok gudang seluruh farm, dipecah per jenis pakan. */
     rows(`
@@ -292,7 +298,7 @@ export async function buildBootstrap(user, batchCode) {
       profit: fin ? +cycleSummary.profit : null, dodCost: fin ? +cycleSummary.dod_cost : null,
     } : null,
     popTx: popTx.map(t => ({ id: t.id, date: t.occurred_at, type: t.type === 'DOD_IN' ? 'DOD_MASUK' : t.type === 'DEATH' ? 'KEMATIAN' : t.type === 'SALE' ? 'PENJUALAN' : t.type === 'TRANSFER_IN' ? 'TRANSFER_MASUK' : t.type === 'TRANSFER_OUT' ? 'TRANSFER_KELUAR' : t.type === 'HARVEST' ? 'PANEN' : t.type, barn: bcode[t.barn_id], qty: t.qty, user: t.created_by, ref: t.ref_id, locked: true })),
-    mortality: mortality.map(m => ({ id: m.id, date: m.occurred_at, barn: bcode[m.barn_id], qty: m.qty, cause: m.cause, note: m.note, photo: m.photo, photoSource: m.photo_source, user: m.created_by, status: m.status, locked: m.locked })),
+    mortality: mortality.map(m => ({ id: m.id, date: m.occurred_at, barn: bcode[m.barn_id], qty: m.qty, cause: m.cause, kind: m.kind || 'MATI', note: m.note, photo: m.photo, photoSource: m.photo_source, user: m.created_by, status: m.status, locked: m.locked })),
     feedRecords, feedPurchases, feedAdjust,
     feedOpname: opname.map(o => ({ id: o.id, date: o.occurred_at, physical: +o.physical_kg, theoretical: +o.theoretical_kg, user: o.created_by, note: o.note })),
     weights: weights.map(w => ({ id: w.id, date: w.occurred_at, barn: bcode[w.barn_id], n: w.sample_n, total: +w.total_kg, avg: +w.avg_kg, user: w.created_by, photo: w.photo, photoSource: w.photo_source, locked: w.locked })),
@@ -330,8 +336,8 @@ export async function buildBootstrap(user, batchCode) {
       bobot: h.bobot_akhir == null ? null : +h.bobot_akhir, hariSejakTimbang: h.hari_sejak_timbang == null ? null : +h.hari_sejak_timbang,
       // FCR kandang = pakan terpakai / pertambahan bobot hidup. Bobot DOD dikurangkan kalau ditimbang.
       ...(() => { if (h.bobot_akhir == null) return { fcr: null }; const hidup = h.population * +h.bobot_akhir; const awal = h.dod_weight_kg > 0 ? h.masuk * +h.dod_weight_kg : 0; const tambah = hidup - awal; return { fcr: tambah > 0 && +h.pakan_total > 0 ? +h.pakan_total / tambah : null, fcrTanpaDod: !(h.dod_weight_kg > 0) }; })() })),
-    mortUmur: mortUmur.map(m => ({ umur: +m.umur, n: m.n })),
-    mortSebab: mortSebab.map(m => ({ sebab: m.cause, n: m.n })),
+    mortUmur: mortUmur.map(m => ({ umur: +m.umur, n: m.n, mati: m.mati, afkir: m.afkir })),
+    mortSebab: mortSebab.map(m => ({ sebab: m.cause, kind: m.kind, n: m.n })),
     stokPakanFarm: +stokFarm.kg,
     batchHabis: batchHabisRows.map(r => ({ code: r.code })),
     fcrSeri: fcrSeri.map(w => { const hidup = w.pop * +w.avg_kg; const awal = w.dod_weight_kg > 0 ? w.masuk * +w.dod_weight_kg : 0; const tambah = hidup - awal;
