@@ -133,6 +133,19 @@ button.kpi.klik:active{transform:translateY(1px)}
 .kpi .kpi-ke{position:absolute;top:14px;right:14px;color:var(--dim);opacity:.6;transition:opacity .15s,color .15s}
 button.kpi.klik:hover .kpi-ke,button.kpi.klik:focus-visible .kpi-ke{color:var(--acc);opacity:1}
 @media (prefers-reduced-motion:reduce){button.kpi.klik:active{transform:none}}
+/* Penanda lingkup. Dashboard menampilkan dua lingkup yang berbeda dalam satu
+   layar: angka SELURUH FARM (semua kandang) dan angka SATU SIKLUS (siklus yang
+   sedang dibuka). Tanpa penanda ini keduanya terlihat bertentangan — mis. tabel
+   pakan 2.150 ekor sementara kartu populasi 719 ekor. Permintaan Abdur 26 Nov. */
+.lingkup{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px}
+.lingkup .tag{font-size:10.5px;font-weight:800;letter-spacing:.11em;border-radius:5px;padding:4px 9px;white-space:nowrap}
+.lingkup .tag.farm{background:#8FC9A8;color:#11331F}
+.lingkup .tag.siklus{background:#D8C278;color:#17241B}
+.lingkup h3{margin:0;font-size:15px}
+.lingkup .ket{font-size:12.5px;color:var(--muted)}
+.lingkup-note{font-size:12px;color:var(--dim);margin:0 0 12px}
+.lingkup-blok{margin-top:14px}
+tfoot.total td{border-top:1px solid rgba(255,255,255,.14);font-weight:700;padding-top:11px}
 .kpi .val small{font-size:13px;color:var(--muted);font-weight:600;margin-left:3px}
 .kpi .foot{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;margin-top:auto}
 .kpi .foot.up{color:var(--soft)}.kpi .foot.down{color:var(--danger)}.kpi .foot.warn{color:var(--warn)}

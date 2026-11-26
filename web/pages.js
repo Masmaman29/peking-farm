@@ -63,6 +63,13 @@ const kpi=(lbl,val,unit,foot,footCls='',icon='growth',cls='',ke='')=>{
 };
 /* Tautan "lihat" di kepala kartu, menuju halaman yang memiliki data itu. */
 const lihatDi=(ke,teks='Lihat')=>canPage(ke)?`<button class="btn ghost sm" data-act="go" data-page="${ke}">${teks} ${ic('arrow',12)}</button>`:'';
+/* Penanda lingkup — permintaan Abdur 26 Nov 2026.
+   Dashboard memuat dua lingkup berbeda dalam satu layar: tabel pakan menghitung
+   SELURUH FARM (semua kandang yang berisi), sedangkan kartu KPI hanya SIKLUS yang
+   sedang dibuka. Keduanya benar, tapi tanpa penanda angkanya terlihat bertentangan.
+   Fungsi ini hanya menambah keterangan; tidak ada satu pun hitungan yang diubah. */
+const lingkup=(jenis,judul,ket='',catatan='',kanan='')=>
+ `<div class="lingkup"><span class="tag ${jenis==='farm'?'farm':'siklus'}">${jenis==='farm'?'SELURUH FARM':'SATU SIKLUS'}</span><h3>${judul}</h3>${ket?`<span class="ket">${ket}</span>`:''}${kanan?`<span style="margin-left:auto">${kanan}</span>`:''}</div>${catatan?`<p class="lingkup-note">${catatan}</p>`:''}`;
 const emptyState=(t,d,act='')=>`<div class="empty">${ic('box',30)}<b>${t}</b><span>${d}</span>${act}</div>`;
 const seg=(opts,cur,act)=>`<div class="seg">${opts.map(([v,l])=>`<button class="${cur===v?'active':''}" data-act="${act}" data-v="${v}">${l}</button>`).join('')}</div>`;
 const rangeSeg=()=>seg([['7','7 hari'],['14','14 hari'],['30','30 hari'],['siklus','1 siklus']],state.range,'range');
@@ -219,12 +226,46 @@ function kartuPakanHarian(){const h=DB.harian||[];if(!h.length)return '';
  const sel=(x,sesi)=>{const kg=sesi==='PAGI'?x.pakanPagi:x.pakanSore;
   if(kg>0)return `<b>${num(kg,1)} kg</b> ${badge('ok','✓')}`;
   return boleh?`<button class="btn sm primary" data-act="modal" data-m="feed-use" data-id="${x.barn}" data-kind="${sesi}">${x.jatahSesiKg!=null?num(x.jatahSesiKg,1)+' kg':'Catat'}</button>`:(x.jatahSesiKg!=null?num(x.jatahSesiKg,1)+' kg ':'')+badge('warn','BELUM');};
- return `<div class="card" style="margin-bottom:14px"><div class="card-h"><h3>Pakan Hari Ini per Kandang</h3><span class="sub">${sesiBeres} dari ${h.length*2} pemberian (pagi & sore) sudah dicatat</span></div>
+ const popFarm=h.reduce((s,x)=>s+(+x.pop||0),0);
+ return `<div class="card" style="margin-bottom:14px">
+  ${lingkup('farm','Pakan hari ini per kandang',`${h.length} kandang aktif · ${num(popFarm)} ekor`,`Semua kandang yang sedang berisi, bukan hanya siklus yang dibuka di atas. ${sesiBeres} dari ${h.length*2} pemberian (pagi &amp; sore) sudah dicatat.`)}
   ${calc.bawaan('pakemPakan')&&h.some(x=>!x.jatahKhusus)?`<div class="alert warn" style="margin-bottom:12px">${ic('alert',16)}<div><b>Jatah masih angka awal</b>Jatah gram per umur memakai angka awal dari mockup dan belum Pak sahkan. Periksa dan simpan di Pengaturan → Master Data → Pakem Jatah Pakan, atau isi jatah khusus per batch.</div></div>`:''}
   <div class="kv" style="row-gap:8px;margin-bottom:14px"><span>Kebutuhan hari ini</span><b class="num">${butuh>0?num(butuh,1)+' kg':'—'}</b><span>Sudah dicatat</span><b class="num">${num(tercatat,1)} kg</b><span>Stok gudang</span><b class="num">${num(stok,1)} kg${cukup!=null?` · cukup ±${num(cukup,0)} hari`:''}</b></div>
   <div class="tbl-wrap"><table><thead><tr><th>Kandang</th><th class="r">Umur</th><th class="r">Ekor</th><th class="r">Jatah</th><th class="r">Kebutuhan</th><th class="r">Pagi</th><th class="r">Sore</th><th class="r">FCR</th><th>Bobot</th></tr></thead><tbody>
   ${h.map(x=>`<tr><td><b>${x.barnName}</b> <small style="color:var(--dim)">${x.code}</small></td><td class="r num">${x.umur} hari</td><td class="r num">${num(x.pop)}</td><td class="r num">${x.jatahGram!=null?num(x.jatahGram,0)+' g':'—'}</td><td class="r num"><b>${x.jatahKg!=null?num(x.jatahKg,1)+' kg':'—'}</b></td><td class="r num">${sel(x,'PAGI')}</td><td class="r num">${sel(x,'SORE')}</td><td class="r num">${x.fcr!=null?num(x.fcr,2):'—'}</td><td>${x.bobot!=null?`<span class="num">${num(x.bobot,2)} kg</span> <small style="color:var(--dim)">${x.hariSejakTimbang===0?'hari ini':x.hariSejakTimbang+' hari lalu'}</small>`:'<small style="color:var(--dim)">belum ditimbang</small>'}${perluTimbang(x)?' '+(boleh?`<button class="btn sm" data-act="modal" data-m="weigh" data-id="${x.barn}">Timbang</button>`:badge('warn','TIMBANG')):''}</td></tr>`).join('')}
-  </tbody></table></div><small style="display:block;margin-top:10px;color:var(--dim)">Kebutuhan = jatah gram sesuai umur × bebek hidup di kandang itu, dibagi dua untuk pagi dan sore. Tombol di kolom Pagi/Sore membuka form dengan angka itu sudah terisi; ubah kalau yang diberikan beda. FCR = pakan terpakai ÷ pertambahan bobot hidup kandang itu, muncul setelah ada timbangan.</small></div>`;}
+  </tbody><tfoot class="total"><tr><td><b>Total farm</b></td><td class="r num">—</td><td class="r num">${num(popFarm)}</td><td class="r num">—</td><td class="r num">${butuh>0?num(butuh,1)+' kg':'—'}</td><td class="r num">—</td><td class="r num">—</td><td class="r num">—</td><td>—</td></tr></tfoot></table></div><small style="display:block;margin-top:10px;color:var(--dim)">Baris <b>Total farm</b> adalah jumlah seluruh kandang di tabel ini, bukan angka siklus yang dibuka di kartu bawah. Kebutuhan = jatah gram sesuai umur × bebek hidup di kandang itu, dibagi dua untuk pagi dan sore. Tombol di kolom Pagi/Sore membuka form dengan angka itu sudah terisi; ubah kalau yang diberikan beda. FCR = pakan terpakai ÷ pertambahan bobot hidup kandang itu, muncul setelah ada timbangan.</small></div>`;}
+/* Ringkasan SELURUH FARM. Dibuat supaya lingkup farm punya tempatnya sendiri dan
+   tidak lagi menumpang di bagian siklus. Semua angkanya dari data yang sama yang
+   sudah dipakai tabel pakan di atas — tidak ada hitungan baru. */
+function kartuRingkasanFarm(){
+ const h=DB.harian||[];if(!h.length)return '';
+ const popFarm=h.reduce((s,x)=>s+(+x.pop||0),0);
+ const butuh=h.reduce((s,x)=>s+(x.jatahKg||0),0);
+ const siklus=[...new Set(h.map(x=>x.code))];
+ const stok=calc.feedStockTheory();const hari=calc.feedDaysLeft();
+ const sel=(l,v,u,k)=>`<div style="border-left:3px solid var(--line);padding-left:14px"><div style="font-size:12px;color:var(--muted);margin-bottom:5px">${l}</div><div><b class="num" style="font-size:24px">${v}</b>${u?` <small style="font-size:12px;color:var(--muted)">${u}</small>`:''}</div><div style="font-size:11.5px;color:var(--dim);margin-top:4px">${k}</div></div>`;
+ return `<div class="card lingkup-blok">
+  ${lingkup('farm','Ringkasan seluruh kandang')}
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:20px">
+   ${sel('Populasi seluruh farm',num(popFarm),'ekor',`${h.length} kandang aktif`)}
+   ${sel('Kebutuhan pakan',butuh>0?num(butuh,1):'—','kg','hari ini, semua kandang')}
+   ${sel('Siklus berjalan',siklus.length,'siklus',siklus.length<=4?siklus.join(', '):`${siklus.slice(0,4).join(', ')} dan ${siklus.length-4} lainnya`)}
+   ${sel('Stok pakan gudang',num(stok,1),'kg',hari>0?`cukup ±${num(hari,0)} hari`:'perlu pembelian')}
+  </div></div>`;}
+/* Kepala bagian untuk kartu KPI: menegaskan bahwa angka di bawahnya HANYA siklus
+   yang sedang dibuka, bukan seluruh farm. */
+function kepalaSiklus(){
+ if(!DB.cycle)return '';
+ const h=(DB.harian||[]).find(x=>x.code===DB.cycle.code);
+ const nama=h?`Siklus ${DB.cycle.code} — ${h.barnName}`:`Siklus ${DB.cycle.code}`;
+ /* Kandang lain disebut namanya hanya kalau sedikit; kalau banyak cukup
+    jumlahnya, supaya kalimatnya tidak membengkak di farm dengan banyak kandang. */
+ const lain=[...new Set((DB.harian||[]).filter(x=>x.code!==DB.cycle.code).map(x=>x.barnName))];
+ const sebut=!lain.length?''
+   :lain.length<=2?` ${lain.join(' dan ')} tidak dihitung di sini.`
+   :` ${lain.length} kandang lain tidak dihitung di sini.`;
+ return `<div class="lingkup-blok">${lingkup('siklus',nama,`${num(calc.population())} ekor · hari ke-${calc.day()}`,
+   `Angka di bawah ini hanya siklus ini.${sebut}`)}</div>`;}
 function kartuPakem(){const own=state.user.role==='OWNER';
  return `<div class="card" style="margin-top:14px"><div class="card-h"><h3>Pakem Jatah Pakan${tandaBawaan('pakemPakan')}</h3>${badge('gold','OWNER ONLY')}</div>
  <div class="alert ${calc.bawaan('pakemPakan')?'warn':'info'}" style="margin-bottom:14px">${ic(calc.bawaan('pakemPakan')?'alert':'feed',16)}<div><b>${calc.bawaan('pakemPakan')?'Angka awal dari mockup, belum disahkan':'Dipakai menghitung kebutuhan pakan tiap kandang'}</b>Gram per ekor per hari. Berlaku untuk kandang yang tidak punya jatah khusus. Jatah khusus per batch diisi di form Batch Baru atau Ubah Target.</div></div>
@@ -458,7 +499,7 @@ function pgDashboard(){
   const role=state.user.role;
   if(role==='MANAGER')return pgDashboardManager();
   if(role==='ADMIN')return pgDashboardAdmin();
-  return `${heroCard()}${catatCepat()}<div style="height:14px"></div>${kartuPakanHarian()}${KPIROW()}
+  return `${heroCard()}${catatCepat()}<div style="height:14px"></div>${kartuPakanHarian()}${kepalaSiklus()}${KPIROW()}${kartuRingkasanFarm()}
   <div class="grid g-3" style="margin-top:14px">${attentionCard()}${healthCard()}
    <div class="card"><div class="card-h"><h3>Aliran Populasi</h3><span class="sub">Prinsip balance</span></div>${popFlow()}<div class="chart-box sm" style="margin-top:10px"><canvas id="ch-pop"></canvas></div></div></div>
   <div class="grid g-2" style="margin-top:14px">${chartCard('Pertumbuhan Bobot','ch-weight','','','Aktual vs kurva target · kg','pertumbuhan')}${chartCard('Konsumsi Pakan','ch-feed',rangeSeg(),'','kg per hari')}</div>
@@ -466,7 +507,7 @@ function pgDashboard(){
   <div class="grid g-2" style="margin-top:14px">${chartCard('Biaya vs Omzet','ch-fin','','','kumulatif · Rp','keuangan')}${financeCycleCard()}</div>
   <div class="grid g-3" style="margin-top:14px">${recentActivity()}${anomalyCard()}${approvalCard()}</div>`;
 }
-function pgDashboardManager(){return `${heroCard()}<div style="height:14px"></div>${KPIROW()}
+function pgDashboardManager(){return `${heroCard()}<div style="height:14px"></div>${kepalaSiklus()}${KPIROW()}${kartuRingkasanFarm()}
  <div class="grid g-3" style="margin-top:14px">${approvalCard(4)}${anomalyCard(4)}${healthCard()}</div>
  <div class="grid g-2" style="margin-top:14px">${chartCard('Konsumsi Pakan','ch-feed',rangeSeg(),'','kg per hari')}${chartCard('Mortalitas','ch-mort',rangeSeg(),'','ekor per hari')}</div>
  <div class="grid g-3" style="margin-top:14px">${barnPerfCard()}${feedStockCard()}${chartCard('Pertumbuhan Bobot','ch-weight','','sm','','pertumbuhan')}</div>
