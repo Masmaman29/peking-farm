@@ -225,9 +225,19 @@ function kartuMortalitas(barn){
     ${angka('Berkurang seluruhnya',num(p.total),'ekor','mati + afkir','')}
     ${tgt>0&&!calc.bawaan('targetMortalitasPct')?angka('Target Bapak','&lt; '+num(tgt,1),'%','hanya untuk yang mati sendiri',''):''}
    </div>
-   ${mp==null?'':lewat
-     ? `<div class="alert warn" style="margin-top:14px">${ic('alert',16)}<div><b>Mortalitas ${pct(mp)} — di atas target ${num(tgt,1)}%</b>Ini angka mati sendiri saja; ${num(p.afkir)} ekor afkir tidak ikut dihitung. Periksa penyebab terbanyak di tab Laporan Kematian.</div></div>`
-     : `<div class="alert ok" style="margin-top:14px">${ic('check',16)}<div><b>Mortalitas ${pct(mp)} — masih di bawah target${tgt>0?' '+num(tgt,1)+'%':''}</b>Afkir ${num(p.afkir)} ekor tidak ikut dihitung di angka ini.</div></div>`}
+   ${(()=>{
+     /* Tiga keadaan, bukan dua. Ketahuan di produksi 26 Nov 2026: target
+        mortalitas di sana masih angka BAWAAN yang belum Abdur sahkan, jadi
+        `lewat` bernilai false dan layar menulis "29,5% masih di bawah target
+        5,0%" — padahal 29,5% jelas di atas 5%. Kalau targetnya belum disahkan
+        pemilik, aplikasi tidak boleh memberi vonis sama sekali; cukup
+        tampilkan angkanya dan katakan targetnya belum diatur. */
+     if(mp==null)return '';
+     const belumDiatur=!(tgt>0)||calc.bawaan('targetMortalitasPct');
+     const ekorAfkir=`Afkir ${num(p.afkir)} ekor tidak ikut dihitung di angka ini.`;
+     if(belumDiatur)return `<div class="alert info" style="margin-top:14px">${ic('alert',16)}<div><b>Mortalitas ${pct(mp)} — belum bisa dinilai</b>Target mortalitas belum Bapak sahkan, jadi aplikasi tidak menyimpulkan ini bagus atau jelek. Isi di Pengaturan → Master Data. ${ekorAfkir}</div></div>`;
+     if(lewat)return `<div class="alert warn" style="margin-top:14px">${ic('alert',16)}<div><b>Mortalitas ${pct(mp)} — di atas target ${num(tgt,1)}%</b>Ini angka mati sendiri saja; ${num(p.afkir)} ekor afkir tidak ikut dihitung. Periksa penyebab terbanyak di tab Laporan Kematian.</div></div>`;
+     return `<div class="alert ok" style="margin-top:14px">${ic('check',16)}<div><b>Mortalitas ${pct(mp)} — masih di bawah target ${num(tgt,1)}%</b>${ekorAfkir}</div></div>`;})()}
    ${beruntun?`<div class="alert warn" style="margin-top:10px">${ic('clock',16)}<div><b>${beruntun.hari} hari berturut-turut kematian di atas batas ${beruntun.batas} ekor/hari</b>Sejak ${fmtDate(beruntun.sejak)}, total ${num(beruntun.ekor)} ekor. Bocor pelan seperti ini sering lolos dari grafik karena tidak terlihat sebagai lonjakan.</div></div>`:''}
    ${rugi?kerugianMati(rugi):''}
   </div>`;}
