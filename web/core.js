@@ -162,7 +162,14 @@ const calc = {
     // dijumlahkan v_cycle_cost, jadi rinciannya cocok dengan totalnya.
     calc.expensesApproved().filter(e=>e.cat!=='DOD'&&e.cat!=='Pakan')
       .forEach(e=>m[e.cat]=(m[e.cat]||0)+e.amount);
+    /* T-8: bagian biaya tingkat farm (gaji, listrik, sewa) yang jatuh ke batch
+       ini. Tanpa baris ini, rincian biaya tidak berjumlah sama dengan totalnya,
+       karena v_cycle_cost sudah memasukkannya ke cost_total. */
+    const oh=calc.overheadFarm(); if(oh>0)m['Gaji/listrik/sewa']=oh;
     return m;},
+  /* Bagian biaya tingkat farm yang dibebankan ke batch ini, dibagi menurut
+     ekor-hari. Dihitung server di v_cycle_overhead; layar hanya membacanya. */
+  overheadFarm(){const u=DB.uang; return u&&u.overhead!=null?+u.overhead:0;},
   /* Modal berjalan batch ini. Server sudah menghitungnya di v_cycle_summary.cost_total
      (= biaya DOD + pakan terpakai + biaya disetujui). Layar membacanya, tidak menghitung
      ulang, supaya tidak ada dua angka untuk hal yang sama. */
@@ -176,7 +183,7 @@ const calc = {
   modal(){if(!calc.adaDataKeuangan())return null;
     const s=DB.cycleSummary;
     if(s&&s.cost!=null&&Number.isFinite(+s.cost))return +s.cost;
-    const u=DB.uang; if(u)return (+u.dod||0)+(+u.pakan||0)+(+u.lain||0);
+    const u=DB.uang; if(u)return (+u.dod||0)+(+u.pakan||0)+(+u.lain||0)+(+u.overhead||0);
     return Object.values(calc.costByCat()).reduce((a,b)=>a+b,0);},
   /* Pembelian pakan tingkat FARM — bukan biaya batch mana pun. Dipisahkan supaya
      tidak lagi tercampur ke modal batch. */

@@ -126,7 +126,7 @@ async function gantiBatch(code){
 document.addEventListener('click',e=>{
  const el=e.target.closest('[data-act]');if(!el)return;const a=el.dataset.act;const d=el.dataset;
  if(a==='modal-close-bg'||a==='ai-close-bg'){if(e.target===el){if(a==='ai-close-bg')state.aiOpen=false;else state.modal=null;renderLayer();}return;}
- if(['search-input','audit-q','audit-user','audit-action','repbarn','repday','order-product','site-product','order-calc','site-calc','calc-avg','photo','order-customer','cycle-calc','prod-src','harvest-calc','harvest-cust','move-calc'].includes(a))return;
+ if(['search-input','audit-q','audit-user','audit-action','repbarn','repday','order-product','site-product','order-calc','site-calc','calc-avg','photo','order-customer','cycle-calc','prod-src','harvest-calc','harvest-cust','move-calc','exp-sasaran'].includes(a))return;
  switch(a){
   case 'go':go(d.page);break;
   case 'side-open':state.sideOpen=true;render();break;
@@ -181,6 +181,15 @@ document.addEventListener('change',e=>{const el=e.target.closest('[data-act]');i
  if(a==='prod-src'){const box=document.getElementById('p-inv');if(box)box.hidden=el.value!=='INVENTORY';}
  /* Tanggal nota pembelian diubah: kalau mundur lebih dari batas, isian alasan
     dimunculkan dan diwajibkan. Batasnya ikut konfigurasi, bukan angka tetap. */
+ if(a==='exp-sasaran'){
+  /* Biaya farm perlu periode; biaya kandang perlu kandang. Hanya satu yang
+     relevan, jadi yang lain disembunyikan DAN dinonaktifkan — kalau hanya
+     disembunyikan, nilainya masih terkirim dan aksi menolaknya. */
+  const farm=el.value==='farm';
+  const wf=document.getElementById('exp-farm-wrap'), wk=document.getElementById('exp-kandang-wrap');
+  if(wf){wf.hidden=!farm; wf.querySelectorAll('input').forEach(i=>i.disabled=!farm);}
+  if(wk){wk.hidden=farm;  wk.querySelectorAll('select,input').forEach(i=>i.disabled=farm);}
+  return;}
  if(a==='pur-tanggal'){const w=document.getElementById('pur-alasan-wrap');
   if(w){const m=mundurHari(el.value),batas=MASTER.batasBackdateHari||7,perlu=m>batas;
    w.hidden=!perlu;

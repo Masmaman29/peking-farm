@@ -172,7 +172,13 @@ export async function buildBootstrap(user, batchCode) {
       -- sehingga rincian biaya di layar tidak berjumlah sama dengan totalnya.
       COALESCE((SELECT biaya FROM v_cycle_pakan vp WHERE vp.cycle_id=c.id),0) AS pakan,
       COALESCE((SELECT kg FROM v_cycle_pakan vp WHERE vp.cycle_id=c.id),0) AS pakan_kg,
-      COALESCE((SELECT SUM(e.amount) FROM expense e WHERE e.cycle_id=c.id AND e.status='APPROVED' AND e.deleted_at IS NULL),0) AS lain
+      COALESCE((SELECT SUM(e.amount) FROM expense e WHERE e.cycle_id=c.id AND e.status='APPROVED' AND e.deleted_at IS NULL),0) AS lain,
+      -- T-8: bagian biaya tingkat farm (gaji, listrik, sewa) yang jatuh ke batch
+      -- ini. Dibaca dari v_cycle_overhead, sumber yang SAMA dengan v_cycle_cost.
+      -- Jangan dihitung ulang di sini: rumus pakan pernah ditulis dua kali dan
+      -- sempat berbeda Rp 1.351, sehingga rincian biaya tidak berjumlah sama
+      -- dengan totalnya.
+      COALESCE((SELECT overhead FROM v_cycle_overhead vo WHERE vo.cycle_id=c.id),0) AS overhead
     FROM cycle c WHERE c.id=$1`, [cycle.id]),
     rows(`
     SELECT e.id, e.created_at, e.category::text AS kat, e.amount, e.vendor, e.ref_no, e.status::text AS status,
@@ -313,7 +319,7 @@ export async function buildBootstrap(user, batchCode) {
        Dulu dikirim ke semua peran, sehingga penjagaan pada cycleSummary.cost
        tidak ada artinya — angka yang sama bisa disusun ulang dari sini, dan
        memang itulah yang dilakukan cadangan di calc.modal(). */
-    uang: fin && uangRow ? { panen: Math.round(+uangRow.panen), dod: Math.round(+uangRow.dod), pakan: Math.round(+uangRow.pakan), pakanKg: +uangRow.pakan_kg, lain: Math.round(+uangRow.lain),
+    uang: fin && uangRow ? { panen: Math.round(+uangRow.panen), dod: Math.round(+uangRow.dod), pakan: Math.round(+uangRow.pakan), pakanKg: +uangRow.pakan_kg, lain: Math.round(+uangRow.lain), overhead: Math.round(+uangRow.overhead),
       laba: Math.round(+uangRow.panen - +uangRow.dod - +uangRow.pakan - +uangRow.lain) } : null,
     // Berapa kg pakan terpakai bukan angka keuangan — tetap dikirim untuk FCR
     // dan laporan pakan, terpisah dari nilai rupiahnya.

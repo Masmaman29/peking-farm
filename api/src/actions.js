@@ -347,11 +347,12 @@ export const ACTIONS = {
        expense membuat v_cycle_cost menjumlahkannya dua kali — terukur Rp 999.000
        pada pengujian. Formulir memang tidak menawarkannya, tapi dulu aksi ini
        masih menerimanya lewat permintaan langsung. */
-    const catMap = { Vitamin: 'VITAMIN', Obat: 'OBAT', Listrik: 'LISTRIK', Gas: 'GAS', Sekam: 'SEKAM', 'Tenaga kerja': 'TENAGA_KERJA', Transport: 'TRANSPORT', Peralatan: 'PERALATAN', Maintenance: 'MAINTENANCE', 'Biaya lain': 'LAIN' };
+    const catMap = { Vitamin: 'VITAMIN', Obat: 'OBAT', Listrik: 'LISTRIK', Gas: 'GAS', Sekam: 'SEKAM', 'Tenaga kerja': 'TENAGA_KERJA', Transport: 'TRANSPORT', Peralatan: 'PERALATAN', Maintenance: 'MAINTENANCE', Sewa: 'SEWA', 'Biaya lain': 'LAIN' };
     if (/^(dod|pakan)$/i.test(String(p && p.cat || '').trim())) {
       throw new ActionError('Biaya DOD dan pakan tidak dicatat di sini — keduanya sudah dihitung otomatis dari data bibit dan pemakaian pakan. Mencatatnya lagi akan menghitung dua kali.');
     }
-    const v = z.object({ cat: z.string(), amount: z.number().positive(), vendor: z.string().min(1), ref: z.string().min(1), barn: z.string().optional() }).parse(p);
+    const v = z.object({ cat: z.string(), amount: z.number().positive(), vendor: z.string().min(1), ref: z.string().min(1), barn: z.string().optional(),
+      periodeDari: z.string().trim().optional(), periodeSampai: z.string().trim().optional() }).parse(p);
     if (!catMap[v.cat]) throw new ActionError('Kategori tidak dikenal.');
     await requirePhoto(c, file);
     const cfg = await config(c); const big = v.amount > +cfg.ambang_approval_rp;
@@ -359,10 +360,39 @@ export const ACTIONS = {
     // biaya umum farm - listrik, gaji, sewa - yang memang bukan milik satu batch.
     let cy = { id: null };
     if (v.barn) { const bb = await barnId(c, v.barn, user); cy = await cycleOfBarn(c, bb, v.barn); }
-    const r = await c.query(`INSERT INTO expense(cycle_id,category,amount,vendor,ref_no,occurred_at,status,created_by) VALUES ($1,$2,$3,$4,$5,CURRENT_DATE,$6,$7) RETURNING id`, [cy.id, catMap[v.cat], v.amount, v.vendor, v.ref, big ? 'PENDING' : 'APPROVED', user.id]);
+
+    /* T-8: biaya tingkat farm (gaji, listrik, sewa) dibagi ke tiap batch
+       menurut ekor-hari, jadi sistem harus tahu PERIODE mana yang dibebani.
+       Tagihan listrik bulan November dibagi ke hari-hari bulan November,
+       bukan ke tanggal tagihannya dibayar. Tanpa periode, biayanya menggantung
+       dan tidak pernah masuk HPP mana pun. Penjaga database juga menolaknya;
+       pemeriksaan di sini hanya supaya pesannya enak dibaca. */
+    let pDari = null, pSampai = null;
+    if (!cy.id) {
+      const iso = /^\d{4}-\d{2}-\d{2}$/;
+      if (!v.periodeDari || !v.periodeSampai) {
+        /* Tanpa periode yang disebut, dipakai bulan berjalan menurut kalender
+           farm — itu keadaan paling umum: biaya bulan ini, dicatat bulan ini. */
+        const b = (await c.query(
+          `SELECT date_trunc('month', (now() AT TIME ZONE fn_zona_waktu())::date)::date AS d,
+                  (date_trunc('month', (now() AT TIME ZONE fn_zona_waktu())::date)
+                     + interval '1 month - 1 day')::date AS s`)).rows[0];
+        pDari = b.d; pSampai = b.s;
+      } else {
+        if (!iso.test(v.periodeDari) || !iso.test(v.periodeSampai))
+          throw new ActionError('Tanggal periode tidak terbaca. Pakai bentuk tahun-bulan-tanggal.');
+        if (v.periodeSampai < v.periodeDari)
+          throw new ActionError('Periode terbalik: tanggal akhir lebih awal dari tanggal mulai.');
+        pDari = v.periodeDari; pSampai = v.periodeSampai;
+      }
+    } else if (v.periodeDari || v.periodeSampai) {
+      throw new ActionError('Periode hanya untuk biaya tingkat farm. Biaya yang menempel pada satu kandang memakai tanggal kejadian.');
+    }
+
+    const r = await c.query(`INSERT INTO expense(cycle_id,category,amount,vendor,ref_no,occurred_at,status,periode_dari,periode_sampai,created_by) VALUES ($1,$2,$3,$4,$5,CURRENT_DATE,$6,$7,$8,$9) RETURNING id`, [cy.id, catMap[v.cat], v.amount, v.vendor, v.ref, big ? 'PENDING' : 'APPROVED', pDari, pSampai, user.id]);
     if (big) await approvalRow(c, 'expense', r.rows[0].id, user, 'OWNER');
     await saveAttachment(c, file, 'expense', r.rows[0].id, 'nota', user);
-    await audit(c, user.id, 'CREATE', 'expense', `Biaya ${v.cat} ${rp(v.amount)} — ${v.vendor}${big ? ' (menunggu approval)' : ''}`, r.rows[0].id);
+    await audit(c, user.id, 'CREATE', 'expense', `Biaya ${v.cat} ${rp(v.amount)} — ${v.vendor}${cy.id ? '' : ` · biaya farm periode ${pDari} s/d ${pSampai}, dibagi ke batch menurut ekor-hari`}${big ? ' (menunggu approval)' : ''}`, r.rows[0].id);
     return { id: r.rows[0].id, pending: big };
   },
   async OPNAME(c, p, user, file) {
