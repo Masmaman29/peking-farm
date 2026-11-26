@@ -35,11 +35,11 @@ const fileOf=form=>{
 /* ---------------- KAMERA DALAM APLIKASI ---------------- */
 async function bukaKamera(id){
  if(!id)return;
- state.kamera={id,error:null};renderLayer();
- if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){state.kamera.error='Browser ini tidak mendukung kamera di dalam aplikasi. Pakai Chrome versi baru.';renderLayer();return;}
+ state.kamera={id,error:null};renderLayerJagaIsian();
+ if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){state.kamera.error='Browser ini tidak mendukung kamera di dalam aplikasi. Pakai Chrome versi baru.';renderLayerJagaIsian();return;}
  try{
   const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:960}},audio:false});
-  if(state.kamera&&state.kamera.id===id){window.__kamStream=s;renderLayer();}
+  if(state.kamera&&state.kamera.id===id){window.__kamStream=s;renderLayerJagaIsian();}
   else s.getTracks().forEach(t=>t.stop());
  }catch(err){
   const nm=(err&&err.name)||'';
@@ -48,7 +48,7 @@ async function bukaKamera(id){
    :nm==='NotFoundError'?'Tidak ada kamera di perangkat ini.'
    :nm==='NotReadableError'?'Kamera sedang dipakai aplikasi lain. Tutup dulu aplikasi itu.'
    :'Kamera gagal dibuka ('+(nm||'tidak diketahui')+').';
-  renderLayer();
+  renderLayerJagaIsian();
  }}
 function tutupKamera(){if(window.__kamStream){window.__kamStream.getTracks().forEach(t=>t.stop());window.__kamStream=null;}state.kamera=null;}
 function simpanFoto(id,blob,source){
@@ -208,7 +208,7 @@ document.addEventListener('input',e=>{const el=e.target;const a=el.dataset.act;
  if(a==='harvest-calc')harvestCalc();
  if(a==='calc-avg'){const n=+document.getElementById('ak-n').value,t=+document.getElementById('ak-total').value;document.getElementById('avg-val').textContent=n&&t?num(t/n,2)+' kg/ekor':'—';}
 });
-document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='k'){e.preventDefault();const s=document.getElementById('global-search');if(s)s.focus();}if(e.key==='Escape'){if(state.kamera){tutupKamera();render();return;}state.modal=null;state.aiOpen=false;state.notif=false;renderLayer();}
+document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='k'){e.preventDefault();const s=document.getElementById('global-search');if(s)s.focus();}if(e.key==='Escape'){if(state.kamera){tutupKamera();renderJagaIsian();return;}state.modal=null;state.aiOpen=false;state.notif=false;renderLayer();}
  if(e.key==='Enter'&&e.target.id==='global-search'){e.preventDefault();const q=e.target.value.trim();if(!q)return;const map=[['pakan','pakan'],['populasi','populasi'],['mortal','populasi'],['bobot','pertumbuhan'],['fcr','pakan'],['keuangan','keuangan'],['laba','keuangan'],['order','penjualan'],['penjualan','penjualan'],['stok','stok'],['approval','persetujuan'],['persetujuan','persetujuan'],['audit','audit'],['anomali','anomali'],['laporan','laporan'],['user','pengguna']];const hit=map.find(([k])=>q.toLowerCase().includes(k));if(hit&&canPage(hit[1]))go(hit[1]);else{state.aiOpen=true;renderLayer();aiAsk(q);}}
 });
 /* ---------- Unduh laporan ----------
@@ -427,6 +427,17 @@ function pulihkanIsian(snap){(snap||[]).forEach(s=>{const f=document.getElementB
    if(el.type==='checkbox'||el.type==='radio')el.checked=v;else el.value=v;});});
  if(document.getElementById('tb-body'))hitungPanen();}
 function renderJagaIsian(){const snap=simpanIsian();render();pulihkanIsian(snap);}
+/* Sama seperti renderJagaIsian, tapi hanya membangun ulang lapisan modal.
+   WAJIB dipakai di seluruh jalur kamera.
+
+   Kenapa: renderLayer() melakukan L.innerHTML=html, jadi modal berikut
+   form-nya DIBANGUN ULANG dari awal dan setiap input kembali ke nilai
+   bawaannya. Akibat nyata yang dilaporkan Abdur 26 Nov: saat mencatat
+   kematian, jumlah ekor yang sudah diisi kembali ke angka dasar begitu
+   tombol ambil foto ditekan. Nilainya hilang SEBELUM fotonya diambil, jadi
+   renderJagaIsian() di jepretFoto() tidak menolong — yang disimpannya sudah
+   form yang kosong. */
+function renderLayerJagaIsian(){const snap=simpanIsian();renderLayer();pulihkanIsian(snap);}
 
 /* ---------------- TIMBANGAN PANEN ---------------- */
 function bacaTimbangan(){const tb=document.getElementById('tb-body');if(!tb)return [];return [...tb.querySelectorAll('tr')].map(tr=>({ekor:+(tr.querySelector('[name=tb_ekor]').value||0),kg:+(tr.querySelector('[name=tb_kg]').value||0)})).filter(t=>t.ekor||t.kg);}
