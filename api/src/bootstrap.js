@@ -151,10 +151,17 @@ export async function buildBootstrap(user, batchCode) {
     rows(`SELECT f.*, (SELECT file_url FROM attachment a WHERE a.entity_type='feed_transaction' AND a.entity_id=f.id ORDER BY version DESC LIMIT 1) photo,
             (SELECT a.source FROM attachment a WHERE a.entity_type='feed_transaction' AND a.entity_id=f.id ORDER BY version DESC LIMIT 1) photo_source,
             (SELECT x.type::text FROM feed x WHERE x.id=f.feed_id) jenis
-     FROM feed_transaction f WHERE (cycle_id=$1 OR cycle_id IS NULL) AND deleted_at IS NULL ORDER BY occurred_at`, [cycle.id]),
+     /* Urut tanggal, lalu waktu pencatatan, lalu id. occurred_at saja TIDAK
+        cukup: nota pembelian disimpan bertanggal (tanpa jam), jadi dua nota di
+        hari yang sama urutannya jadi acak menurut PostgreSQL. Akibatnya kartu
+        "harga pakan terbaru" bisa menampilkan nota yang salah di hari Bapak
+        beli pakan dua kali. Ketahuan 26 Nov 2026. */
+     FROM feed_transaction f WHERE (cycle_id=$1 OR cycle_id IS NULL) AND deleted_at IS NULL
+     ORDER BY occurred_at, created_at, id`, [cycle.id]),
     rows(`SELECT w.*, (SELECT file_url FROM attachment a WHERE a.entity_type='weight_record' AND a.entity_id=w.id ORDER BY version DESC LIMIT 1) photo,
             (SELECT a.source FROM attachment a WHERE a.entity_type='weight_record' AND a.entity_id=w.id ORDER BY version DESC LIMIT 1) photo_source
-     FROM weight_record w WHERE cycle_id=$1 AND deleted_at IS NULL AND status<>'SUPERSEDED' ORDER BY occurred_at`, [cycle.id]),
+     FROM weight_record w WHERE cycle_id=$1 AND deleted_at IS NULL AND status<>'SUPERSEDED'
+     ORDER BY occurred_at, created_at, id`, [cycle.id]),
     rows('SELECT * FROM health_record WHERE cycle_id=$1 AND deleted_at IS NULL ORDER BY occurred_at', [cycle.id]),
     rows('SELECT * FROM barn_condition WHERE cycle_id=$1 ORDER BY occurred_at DESC LIMIT 200', [cycle.id]),
     fin ? rows('SELECT * FROM expense WHERE cycle_id=$1 AND deleted_at IS NULL ORDER BY occurred_at', [cycle.id]) : Promise.resolve([]),

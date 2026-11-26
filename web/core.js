@@ -366,6 +366,10 @@ const calc = {
      (feed_transaction.price_per_kg) dan tabelnya append-only, jadi nota baru
      tidak pernah mengubah biaya batch yang sudah lalu. */
   riwayatHargaPakan(){
+    /* Urutan dari server sudah kronologis (tanggal, lalu waktu catat, lalu id).
+       Sort di sini HANYA pada tanggal, dan Array.sort stabil sejak ES2019, jadi
+       nota di hari yang sama tetap memakai urutan server — bukan urutan acak.
+       Jangan diganti jadi pembanding yang tidak stabil. */
     const beli=(DB.feedPurchases||[]).filter(p=>p.status==='APPROVED'&&p.price>0)
       .slice().sort((a,b)=>toDate(a.date)-toDate(b.date));
     const per={};
