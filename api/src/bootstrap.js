@@ -27,7 +27,7 @@ export async function buildBootstrap(user, batchCode) {
   /* ---- Gelombang 1 ----
      Semua yang tidak bergantung pada hasil query lain diminta sekaligus, bukan
      satu per satu. Di sinyal dan jaringan lambat ini yang paling terasa. */
-  const [cfg, bawaanRows, farm, batches, hargaPakanRata, hargaJenis, barnPopRows, opname,
+  const [cfg, bawaanRows, farm, batches, hargaPakanRata, hargaJenis, barnPopRows, barnGerakRows, opname,
     inventory, invTx, customers, orders, corrections, anomalies, harian, mortUmur,
     mortSebab, stokFarm, stokJenis, pakaiFarm, auditRows, punya] = await Promise.all([
     config(),
@@ -52,6 +52,14 @@ export async function buildBootstrap(user, batchCode) {
     // Populasi tiap kandang dari SELURUH batch, bukan hanya batch yang sedang
     // dibuka. Dipakai layar untuk tahu kandang mana yang benar-benar kosong.
     rows(`SELECT barn_code, SUM(population)::int n FROM v_batch_aktif GROUP BY barn_code`),
+    /* Kapan tiap kandang terakhir kali ada pergerakan populasi. Untuk kandang
+       yang sekarang kosong, tanggal itulah saat ekor terakhir keluar — dipakai
+       layar untuk menghitung sudah berapa hari kandang menganggur. Kandang yang
+       belum pernah dipakai sama sekali tidak muncul di sini, dan memang tidak
+       boleh dihitung "menganggur" karena tidak pernah ada isinya. */
+    rows(`SELECT b.code barn_code, MAX(t.occurred_at) terakhir
+            FROM population_tx t JOIN barn b ON b.id = t.barn_id
+           GROUP BY b.code`),
     rows('SELECT * FROM feed_stock_opname ORDER BY occurred_at'),
     rows('SELECT i.id,i.name,i.unit,i.category cat,i.min_qty min,i.avg_weight_kg "avgW", COALESCE(s.qty,0) qty FROM inventory i LEFT JOIN v_inventory_stock s ON s.inventory_id=i.id WHERE i.is_active ORDER BY i.category,i.name'),
     rows('SELECT * FROM inventory_tx ORDER BY occurred_at DESC LIMIT 300'),
@@ -105,6 +113,7 @@ export async function buildBootstrap(user, batchCode) {
   ]);
   const bawaan = bawaanRows.map(r => bawaanKey[r.key]).filter(Boolean);
   const barnPop = Object.fromEntries(barnPopRows.map(r => [r.barn_code, r.n]));
+  const barnGerakTerakhir = Object.fromEntries(barnGerakRows.map(r => [r.barn_code, r.terakhir]));
   const audit = auditRows;
 
   // Batch yang sedang dibuka di layar: yang diminta, atau yang paling tua
@@ -113,11 +122,11 @@ export async function buildBootstrap(user, batchCode) {
   if (ak && user.barn_id) pilih = punya ? batches.find(b => b.cycle_id === punya.cycle_id) : pilih;
 
   /* ---- Gelombang 2: yang butuh id farm, sekaligus menentukan batch yang dibuka. ---- */
-  const [barns, users, products, prevCycles, batchHabisRows, cycle] = await Promise.all([
+  const [barns, users, products, prevCycles, batchHabisRows, cycle, asalDodRows] = await Promise.all([
     rows('SELECT id,code,name,capacity,note,is_active FROM barn WHERE farm_id=$1 ORDER BY code', [farm.id]),
     rows(`SELECT id,name,role,barn_id,is_active,phone,email,last_login_at,archived_at FROM app_user WHERE farm_id=$1 ORDER BY role,name`, [farm.id]),
     rows('SELECT * FROM product WHERE farm_id=$1 ORDER BY type', [farm.id]),
-    rows(`SELECT s.* FROM v_cycle_summary s JOIN cycle c ON c.id=s.cycle_id
+    rows(`SELECT s.*, c.dod_source FROM v_cycle_summary s JOIN cycle c ON c.id=s.cycle_id
      WHERE c.farm_id=$1 AND c.status<>'ACTIVE' ORDER BY s.dod_date DESC`, [farm.id]),
     rows(`SELECT c.code FROM cycle c WHERE c.farm_id=$1 AND c.status='ACTIVE' AND NOT EXISTS (SELECT 1 FROM v_batch_aktif v WHERE v.cycle_id=c.id) ORDER BY c.dod_date`, [farm.id]),
     (async () => {
@@ -129,6 +138,7 @@ export async function buildBootstrap(user, batchCode) {
         ? one('SELECT * FROM cycle WHERE id=$1', [(pilih || batches[0]).cycle_id])
         : one(`SELECT * FROM cycle WHERE farm_id=$1 AND status='ACTIVE' ORDER BY dod_date LIMIT 1`, [farm.id]);
     })(),
+    rows('SELECT * FROM v_asal_dod WHERE farm_id=$1 ORDER BY penjual', [farm.id]),
   ]);
   const bcode = Object.fromEntries(barns.map(b => [b.id, b.code]));
 
@@ -239,12 +249,13 @@ export async function buildBootstrap(user, batchCode) {
     users: users.map(u => ({ id: u.id, name: u.name, role: u.role, barn: bcode[u.barn_id] || null, active: u.is_active, phone: u.phone, email: u.email, lastLogin: u.last_login_at, archived: !!u.archived_at })),
     barns: barns.map(b => ({ id: b.code, uuid: b.id, name: b.name, cap: b.capacity, note: b.note, active: b.is_active })),
     barnPop,
+    barnGerakTerakhir,
     batches: batches.map(b => ({
       id: b.cycle_id, code: b.code, barn: b.barn_code, barnName: b.barn_name, barnNames: b.barn_names,
       dodDate: b.dod_date, dodQty: b.dod_qty, targetDays: b.target_days, stage: b.stage,
       population: b.population, umur: b.umur_hari, panen: b.perkiraan_panen, sisaHari: b.sisa_hari,
     })),
-    cycle: cycle ? { id: cycle.id, code: cycle.code, breed: cycle.breed, status: 'AKTIF', dodDate: cycle.dod_date, dodQty: cycle.dod_qty, dodPrice: fin ? +cycle.dod_price : null, dodWeight: +cycle.dod_weight_kg, targetDays: cycle.target_days, targetWeight: [+cycle.target_weight_min, +cycle.target_weight_max], targetCurve: cycle.target_curve || [], jatah: cycle.feed_plan ? cycle.feed_plan.map(r => +r[2]) : null, targetMort: +cycle.target_mort_pct, stage: cycle.stage, createdBy: cycle.created_by, createdAt: cycle.created_at } : null,
+    cycle: cycle ? { id: cycle.id, code: cycle.code, breed: cycle.breed, status: 'AKTIF', dodDate: cycle.dod_date, dodQty: cycle.dod_qty, dodPrice: fin ? +cycle.dod_price : null, dodWeight: +cycle.dod_weight_kg, targetDays: cycle.target_days, targetWeight: [+cycle.target_weight_min, +cycle.target_weight_max], targetCurve: cycle.target_curve || [], jatah: cycle.feed_plan ? cycle.feed_plan.map(r => +r[2]) : null, targetMort: +cycle.target_mort_pct, stage: cycle.stage, asalDod: cycle.dod_source || null, createdBy: cycle.created_by, createdAt: cycle.created_at } : null,
     prevCycles: prevCycles.map(c => ({
       id: c.cycle_id, code: c.code, breed: c.breed, status: c.status === 'CLOSED' ? 'DITUTUP' : 'SELESAI',
       dodDate: c.dod_date, dodQty: c.dod_qty, closedAt: c.closed_at, closeNote: c.close_note,
@@ -253,6 +264,15 @@ export async function buildBootstrap(user, batchCode) {
       harvestQty: c.harvest_qty, harvestKg: +c.harvest_weight_kg, harvestAvgKg: c.harvest_avg_kg == null ? null : +c.harvest_avg_kg,
       fcr: c.fcr_final == null ? null : +c.fcr_final,
       revenue: fin ? +c.revenue : null, cost: fin ? +c.cost_total : null, profit: fin ? +c.profit : null,
+      asalDod: c.dod_source || null,
+    })),
+    /* Rekap hasil per penjual DOD. Hanya batch yang asal DOD-nya diisi; lihat
+       v_asal_dod di migrasi 023. Kosong selama belum ada yang mengisi. */
+    asalDod: asalDodRows.map(r => ({
+      penjual: r.penjual, batch: r.jumlah_batch, dod: r.dod_total,
+      mortPct: r.mortalitas_pct == null ? null : +r.mortalitas_pct,
+      fcr: r.fcr_rata == null ? null : +r.fcr_rata,
+      pertama: r.dod_pertama, terakhir: r.dod_terakhir,
     })),
     cycleSummary: cycleSummary ? {
       days: cycleSummary.days, deaths: cycleSummary.deaths, harvested: cycleSummary.harvested,

@@ -146,6 +146,31 @@ button.kpi.klik:hover .kpi-ke,button.kpi.klik:focus-visible .kpi-ke{color:var(--
 .lingkup-note{font-size:12px;color:var(--dim);margin:0 0 12px}
 .lingkup-blok{margin-top:14px}
 tfoot.total td{border-top:1px solid rgba(255,255,255,.14);font-weight:700;padding-top:11px}
+/* Jadwal panen & isi ulang (Siklus Ternak). */
+.jp-bulan{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;font-size:11px;color:var(--muted);letter-spacing:.08em;border-bottom:1px solid var(--line);padding-bottom:8px}
+.jp-lajur{position:relative;padding-top:10px}
+.jp-baris{position:relative;height:42px}
+.jp-bar{position:absolute;top:7px;height:28px;border-radius:7px;display:flex;align-items:center;padding:0 11px;font-size:12.5px;font-weight:600;color:#11331F;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.jp-lbl{position:absolute;top:13px;font-size:12.5px;color:var(--muted);white-space:nowrap;pointer-events:none}
+.jp-jeda{position:absolute;right:0;top:0;bottom:0;border-left:1px dashed #3C6B55;background:repeating-linear-gradient(135deg,rgba(224,138,122,.09) 0 7px,transparent 7px 14px);border-radius:0 8px 8px 0}
+.jp-jeda-t{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;text-align:center;padding:0 8px}
+.jp-jeda-t b{font-size:14px;color:#E8A07A}
+.jp-jeda-t span{font-size:11.5px;color:var(--muted)}
+.jp-ring{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));border-top:1px solid var(--line);margin-top:4px}
+.jp-ring>div{padding:13px 0 0 14px;border-left:1px solid var(--line)}
+.jp-ring>div:first-child{border-left:none;padding-left:0}
+/* Tren antar siklus (tab Riwayat). */
+.tr-bars{display:flex;align-items:flex-end;gap:12px;height:118px;border-bottom:1px solid var(--line);position:relative}
+.tr-bars>.tr-col{flex:1;height:100%;display:flex;flex-direction:column;min-width:0}
+.tr-pos{display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:5px}
+.tr-neg{display:flex;flex-direction:column;justify-content:flex-start;align-items:center;gap:5px}
+.tr-bars i{display:block;width:100%;flex:none}
+.tr-pos i{border-radius:6px 6px 0 0}
+.tr-neg i{border-radius:0 0 6px 6px}
+.tr-bars b{font-size:12px;font-weight:700;white-space:nowrap}
+.tr-x{display:flex;gap:12px;margin-top:7px}
+.tr-x>span{flex:1;text-align:center;font-size:11.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis}
+@media(max-width:760px){.jp-bar{font-size:11px;padding:0 7px}.jp-jeda-t b{font-size:12px}}
 .kpi .val small{font-size:13px;color:var(--muted);font-weight:600;margin-left:3px}
 .kpi .foot{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;margin-top:auto}
 .kpi .foot.up{color:var(--soft)}.kpi .foot.down{color:var(--danger)}.kpi .foot.warn{color:var(--warn)}

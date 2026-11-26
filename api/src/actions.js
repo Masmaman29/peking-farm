@@ -496,6 +496,10 @@ export const ACTIONS = {
       bobotDodKg: z.number().nonnegative().max(5).optional(),
       targetMortPct: z.number().nonnegative().max(100).optional(),
       jatah: skemaJatah.optional(),
+      /* Asal DOD — nama penetasan/penjual. Boleh dikosongkan; yang dikosongkan
+         disimpan NULL, bukan string kosong, supaya tidak muncul sebagai
+         "penjual tanpa nama" di rekap v_asal_dod. */
+      asalDod: z.string().trim().max(120).optional(),
       // Bentuk sederhana untuk pola batch bergilir: satu batch, satu kandang.
       barn: z.string().min(1).optional(),
       qty: z.number().int().positive().optional(),
@@ -532,9 +536,11 @@ export const ACTIONS = {
     if (targetMort == null) throw new ActionError('Target mortalitas belum diatur. Isi di Pengaturan \u2192 Master Data.');
     const qty = v.barns.reduce((a, x) => a + x.qty, 0);
 
-    const cy = (await c.query(`INSERT INTO cycle(farm_id,code,breed,dod_date,dod_qty,dod_price,target_curve,target_days,status,stage,locked,created_by,dod_weight_kg,target_weight_min,target_weight_max,target_mort_pct)
-      VALUES ($1,$2,COALESCE($3,'Bebek Peking'),$4,$5,$6,$7,$8,'ACTIVE','DOD_IN',true,$9,$10,$11,$12,$13) RETURNING id`,
-      [farm.id, code, v.breed || null, v.dodDate, qty, v.dodPrice, JSON.stringify(curve), v.targetDays, user.id, bobotDod, v.targetBobotMin, bobotMax, targetMort])).rows[0].id;
+    const asalDod = v.asalDod && v.asalDod.length ? v.asalDod : null;
+
+    const cy = (await c.query(`INSERT INTO cycle(farm_id,code,breed,dod_date,dod_qty,dod_price,target_curve,target_days,status,stage,locked,created_by,dod_weight_kg,target_weight_min,target_weight_max,target_mort_pct,dod_source)
+      VALUES ($1,$2,COALESCE($3,'Bebek Peking'),$4,$5,$6,$7,$8,'ACTIVE','DOD_IN',true,$9,$10,$11,$12,$13,$14) RETURNING id`,
+      [farm.id, code, v.breed || null, v.dodDate, qty, v.dodPrice, JSON.stringify(curve), v.targetDays, user.id, bobotDod, v.targetBobotMin, bobotMax, targetMort, asalDod])).rows[0].id;
     if (v.jatah) await c.query('UPDATE cycle SET feed_plan=$1 WHERE id=$2', [JSON.stringify(jadiPlan(v.jatah)), cy]);
 
     for (const b of v.barns) {
@@ -544,7 +550,7 @@ export const ACTIONS = {
       await c.query(`INSERT INTO population_tx(cycle_id,barn_id,type,qty,ref_type,ref_id,occurred_at,created_by)
         VALUES ($1,$2,'DOD_IN',$3,'cycle',$1,$4,$5)`, [cy, bar.id, b.qty, v.dodDate, user.id]);
     }
-    await audit(c, user.id, 'CREATE', 'cycle', `Siklus ${code} dimulai \u2014 ${qty} ekor DOD @ ${v.dodPrice}, ${v.barns.length} kandang`, cy, null, { code, qty, dodPrice: v.dodPrice });
+    await audit(c, user.id, 'CREATE', 'cycle', `Siklus ${code} dimulai \u2014 ${qty} ekor DOD @ ${v.dodPrice}, ${v.barns.length} kandang${asalDod ? `, asal DOD ${asalDod}` : ''}`, cy, null, { code, qty, dodPrice: v.dodPrice, asalDod });
     return { id: cy, code };
   },
 

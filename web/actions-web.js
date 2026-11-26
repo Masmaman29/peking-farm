@@ -315,7 +315,8 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
     if(!(bobot>0)){toast('Isi target bobot panen (kg/ekor).','err');return;}
     if(!(hari>0)){toast('Isi target panen (berapa hari).','err');return;}
     const dodGram=+v.dodGram||0;
-    const r=await act('CYCLE_CREATE',{dodDate:v.date,dodPrice:+v.price,breed:v.breed,targetDays:hari,targetBobotMin:bobot,barn:v.barn,qty,...(dodGram>0?{bobotDodKg:dodGram/1000}:{}),...(()=>{const j=bacaJatah(v);const pk=MASTER.pakemPakan||[];return j&&j.some((x,i)=>x!==pk[i])?{jatah:j}:{};})()});
+    const asal=(v.asalDod||'').trim();
+    const r=await act('CYCLE_CREATE',{dodDate:v.date,dodPrice:+v.price,breed:v.breed,targetDays:hari,targetBobotMin:bobot,barn:v.barn,qty,...(dodGram>0?{bobotDodKg:dodGram/1000}:{}),...(asal?{asalDod:asal}:{}),...(()=>{const j=bacaJatah(v);const pk=MASTER.pakemPakan||[];return j&&j.some((x,i)=>x!==pk[i])?{jatah:j}:{};})()});
     if(r){closeModal();state.batch=r.code;toast(`Batch ${r.code} dimulai — ${num(qty)} ekor di ${barnName(v.barn)}.`);await loadDB();render();}break;}
   case 'submit-batch-move':{
     const r=await act('BATCH_MOVE',{from:v.from,to:v.to,qty:v.qty?+v.qty:undefined,note:v.note||undefined});

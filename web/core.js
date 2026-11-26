@@ -381,6 +381,83 @@ const calc = {
   // Isi kandang menurut SEMUA batch (calc.population hanya batch yang dibuka)
   isiKandang(code){return (DB.barnPop||{})[code]||0;},
   kandangKosong(){return barnsActive().filter(b=>calc.isiKandang(b.id)===0);},
+  /* Sudah berapa hari kandang ini kosong. Dihitung dari pergerakan populasi
+     TERAKHIR di kandang itu — saat ekor terakhir keluar. null kalau kandang
+     belum pernah dipakai sama sekali: kandang yang belum pernah diisi bukan
+     "menganggur", dan tidak boleh ditampilkan seolah-olah begitu. */
+  kandangKosongHari(barnId){
+    const t=(DB.barnGerakTerakhir||{})[barnId];
+    if(!t)return null;
+    const d=t instanceof Date?t:new Date(t);
+    if(!tglSah(d))return null;
+    const z=MASTER.zonaWaktu||DB.zonaWaktu||'Asia/Jakarta';
+    const hari=x=>{try{return new Intl.DateTimeFormat('en-CA',{timeZone:z,year:'numeric',month:'2-digit',day:'2-digit'}).format(x);}catch(e){return x.toISOString().slice(0,10);}};
+    const a=Date.parse(hari(d)+'T00:00:00Z'), b=Date.parse(hari(new Date())+'T00:00:00Z');
+    const n=Math.round((b-a)/86400000);
+    return Number.isFinite(n)&&n>=0?n:null;},
+  /* Nilai ternak yang sedang berdiri di satu batch, menurut harga jual hidup.
+     Sengaja TIDAK memakai target bobot: yang dinilai adalah bobot yang benar-
+     benar ditimbang. Belum ditimbang atau harga jual belum diisi -> null,
+     beserta alasannya, bukan angka tebakan. */
+  nilaiBatch(code){
+    const h=(DB.harian||[]).find(x=>x.code===code);
+    if(!h)return {nilai:null,sebab:'batch tidak ada di layar harian'};
+    if(h.bobot==null)return {nilai:null,sebab:'belum ditimbang'};
+    const hrg=calc.livePrice();
+    if(!(hrg>0))return {nilai:null,sebab:'harga jual hidup belum diisi'};
+    return {nilai:h.pop*h.bobot*hrg,sebab:null};},
+  /* Jadwal panen seluruh farm beberapa bulan ke depan, dari DOD sampai
+     perkiraan panen tiap batch. Semuanya memakai tanggal yang sudah ada di
+     calc.batches(); tidak ada tanggal yang dikarang. */
+  jadwalPanen(bulan=4){
+    const b=calc.batches().filter(x=>tglSah(x.dodDate instanceof Date?x.dodDate:new Date(x.dodDate)));
+    if(!b.length)return null;
+    const tgl=x=>x instanceof Date?x:new Date(x);
+    const now=new Date();
+    const mulai=new Date(now.getFullYear(),now.getMonth(),1);
+    const habis=new Date(now.getFullYear(),now.getMonth()+bulan,1);
+    const span=habis-mulai;
+    const baris=b.map(x=>{
+      const d=tgl(x.dodDate), p=tgl(x.panen);
+      return {...x, d, p,
+        kiri:Math.max(0,(d-mulai)/span*100),
+        kanan:Math.min(100,(p-mulai)/span*100)};
+    }).sort((x,y)=>x.p-y.p);
+    // ringkasan per bulan: berapa batch panen, berapa ekor (populasi hari ini)
+    const bulanan=[];
+    for(let i=0;i<bulan;i++){
+      const a=new Date(now.getFullYear(),now.getMonth()+i,1);
+      const z=new Date(now.getFullYear(),now.getMonth()+i+1,1);
+      const isi=baris.filter(x=>x.p>=a&&x.p<z);
+      bulanan.push({dari:a,batch:isi,ekor:isi.reduce((s,x)=>s+(+x.population||0),0)});
+    }
+    // jendela terpanjang tanpa panen, dihitung dari panen terakhir sampai akhir rentang
+    const terakhir=baris.length?baris[baris.length-1].p:null;
+    const jeda=terakhir&&terakhir<habis?{dari:new Date(terakhir.getTime()+86400000),sampai:habis,
+      hari:Math.round((habis-terakhir)/86400000)}:null;
+    // panen yang menumpuk: >1 batch dalam 20 hari
+    const tumpuk=baris.length>1&&(baris[baris.length-1].p-baris[0].p)/86400000<=20
+      ? {n:baris.length,hari:Math.round((baris[baris.length-1].p-baris[0].p)/86400000)+1,
+         ekor:baris.reduce((s,x)=>s+(+x.population||0),0)} : null;
+    return {baris,bulanan,jeda,tumpuk,mulai,habis};},
+  /* Tren antar siklus — hanya dari siklus yang SUDAH DITUTUP, urut dari lama ke
+     baru, dengan selisih terhadap siklus sebelumnya. Siklus berjalan tidak ikut,
+     karena FCR dan labanya belum final dan akan menyesatkan kalau dibandingkan. */
+  trenSiklus(){
+    const p=(DB.prevCycles||[]).slice()
+      .filter(x=>x.dodDate)
+      .sort((a,b)=>new Date(a.dodDate)-new Date(b.dodDate));
+    if(!p.length)return [];
+    return p.map((x,i)=>{
+      const lalu=i>0?p[i-1]:null;
+      const labaEkor=x.profit!=null&&x.dodQty>0?x.profit/x.dodQty:null;
+      const labaLalu=lalu&&lalu.profit!=null&&lalu.dodQty>0?lalu.profit/lalu.dodQty:null;
+      const pct=(a,b)=>a!=null&&b!=null&&b!==0?(a-b)/Math.abs(b)*100:null;
+      return {...x, labaEkor, lalu:!lalu?null:{
+        fcr:pct(x.fcr,lalu.fcr),
+        mortPoin:x.mortPct!=null&&lalu.mortPct!=null?x.mortPct-lalu.mortPct:null,
+        laba:pct(labaEkor,labaLalu)}};
+    });},
   kandangTerisi(){return barnsActive().filter(b=>calc.isiKandang(b.id)>0);},
   batchAktif(){return (DB.batches||[]).length;},
   populasiFarm(){return (DB.batches||[]).reduce((t,b)=>t+b.population,0);},

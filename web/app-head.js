@@ -175,6 +175,16 @@ function modalHTML(m,o={}){
    <div class="f-row"><div class="f"><label>Target bobot panen (kg/ekor)</label><input name="bobot" type="number" step="0.01" min="0.1" max="20" required placeholder="contoh 1,9" data-act="cycle-calc"></div>
     <div class="f"><label>Target panen (hari)</label><input name="days" type="number" min="1" max="200" required placeholder="35 / 38 / 40" data-act="cycle-calc"></div></div>
    <div class="f"><label>Bobot DOD saat datang (gram/ekor) <span style="color:var(--dim);font-weight:600">— boleh dikosongkan</span></label><input name="dodGram" type="number" step="1" min="1" max="500" placeholder="kalau ditimbang, contoh 55"></div>
+   ${(()=>{/* Asal DOD: nama penetasan/penjual. Dipakai mengelompokkan mortalitas
+       dan FCR per penjual di tab Riwayat. Boleh dikosongkan. Nama yang sudah
+       pernah dipakai muncul sebagai pilihan supaya tidak terpecah karena
+       beda ejaan. */
+     const lama=[...new Set([...(DB.asalDod||[]).map(x=>x.penjual),
+        ...(DB.prevCycles||[]).map(x=>x.asalDod),(DB.cycle||{}).asalDod].filter(Boolean))];
+     return `<div class="f"><label>Asal DOD / penjual <span style="color:var(--dim);font-weight:600">— boleh dikosongkan</span></label>
+      <input name="asalDod" maxlength="120" placeholder="nama penetasan atau penjual"${lama.length?' list="asal-dod-lama"':''}>
+      ${lama.length?`<datalist id="asal-dod-lama">${lama.map(x=>`<option value="${x}">`).join('')}</datalist>`:''}
+      <small style="color:var(--dim)">Dipakai untuk melihat penjual mana yang mortalitasnya tinggi, setelah beberapa batch.</small></div>`;})()}
    <div class="kv" style="margin:4px 0 10px"><span>Biaya bibit batch ini</span><b class="num" id="c-cost">—</b><span>Perkiraan panen</span><b class="num" id="c-panen">—</b></div>
    <details style="margin-bottom:10px"><summary style="cursor:pointer;color:var(--dim);font-size:13px">Pengaturan lain (jarang diubah)</summary>
     <div class="f-row" style="margin-top:10px"><div class="f"><label>Jenis</label><input name="breed" value="Bebek Peking" required></div>
