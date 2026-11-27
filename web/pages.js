@@ -984,8 +984,13 @@ function pgPopulasi(){
  const kandang=calc.barnsBerisi(L);
  const judulL=L?`Seluruh farm · ${batchJalan.length} batch jalan`:DB.cycle?`Siklus ${DB.cycle.code}`:'Siklus ini';
  const tombolL=adaPilihan?seg([['siklus','Siklus ini'],['farm','Seluruh farm']],L?'farm':'siklus','lingkup'):'';
+ /* Kode batch disebut namanya hanya kalau sedikit; kalau banyak cukup
+    jumlahnya, supaya kalimatnya tidak membengkak jadi dinding teks di farm
+    dengan banyak batch berjalan. Sama seperti kepalaSiklus() di atas. */
+ const sebutBatch=batchJalan.length<=6?batchJalan.join(', ')
+   :`${batchJalan.slice(0,6).join(', ')} dan ${batchJalan.length-6} lainnya`;
  const ket=L
-   ? `Angka di halaman ini mencakup ${batchJalan.length} batch yang sedang jalan: ${batchJalan.join(', ')}. Siklus yang sudah ditutup tidak ikut — itu ada di Riwayat.`
+   ? `Angka di halaman ini mencakup ${batchJalan.length} batch yang sedang jalan: ${sebutBatch}. Siklus yang sudah ditutup tidak ikut — itu ada di Riwayat.`
    : DB.cycle?`Angka di halaman ini hanya siklus ${DB.cycle.code}.${adaPilihan?' Pilih "Seluruh farm" untuk melihat semua batch yang sedang jalan.':''}`:'';
  return pageHead('Populasi & Mortalitas','Populasi tidak pernah diubah langsung. Setiap angka berasal dari transaksi: DOD masuk, transfer, kematian, panen, penjualan.',
    `${tombolL}${seg([['ALL','Semua'],...kandang.map(x=>[x.id,x.name])],state.barn,'barn')}`)+
