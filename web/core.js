@@ -121,7 +121,34 @@ const calc = {
   // Belum ada catatan pemakaian = belum bisa bilang cukup berapa hari.
   feedDaysLeft(){const r=calc.pakaiFarmRata();return r>0?calc.feedStockTheory()/r:null;},
   avgWeight(barn=null){const ws=DB.weights.filter(w=>!barn||w.barn===barn);if(!ws.length)return null;const last=ws[ws.length-1].date;const s=ws.filter(w=>w.date.getTime()===last.getTime());const n=s.reduce((x,w)=>x+w.n,0);return s.reduce((x,w)=>x+w.total,0)/n;},
-  weightSeries(){const m={};DB.weights.forEach(w=>{const d=dayOf(w.date);m[d]=m[d]||{n:0,t:0};m[d].n+=w.n;m[d].t+=w.total;});return Object.keys(m).map(Number).sort((a,b)=>a-b).map(d=>({day:d,avg:m[d].t/m[d].n}));},
+  /* Rata-rata bobot per HARI. Beberapa catatan di hari yang sama digabung
+     dengan pembobotan jumlah sampel, bukan dirata-rata mentah — menimbang 50
+     ekor tidak boleh sebobot menimbang 5 ekor.
+     barn=null berarti seluruh kandang pada siklus ini. */
+  weightSeries(barn=null){const m={};DB.weights.filter(w=>!barn||w.barn===barn).forEach(w=>{const d=dayOf(w.date);m[d]=m[d]||{n:0,t:0};m[d].n+=w.n;m[d].t+=w.total;});return Object.keys(m).map(Number).sort((a,b)=>a-b).map(d=>({day:d,avg:m[d].t/m[d].n}));},
+  /* Pertambahan bobot harian (ADG), gram per ekor per hari.
+     DIPERBAIKI 27 Nov 2026. Versi lama dihitung langsung di halaman dengan
+     mengambil baris timbangan ke-terakhir dan ke-3-dari-belakang, lalu
+     diberi label "7 hari terakhir". Dua masalah:
+       1. rentangnya bukan 7 hari, melainkan "tiga timbangan terakhir" —
+          kalau menimbang seminggu sekali, itu 14 hari tapi tetap ditulis 7;
+       2. baris mentah bisa berasal dari KANDANG BERBEDA, jadi bobot Kandang A
+          dikurangi bobot Kandang C — hasilnya tidak berarti apa-apa.
+     Sekarang memakai seri per hari yang sudah digabung per kandang, dan
+     mengembalikan rentang yang SEBENARNYA dipakai supaya layar menulis
+     angka hari yang jujur, bukan angka yang diasumsikan. */
+  adg(barn=null,jendela=7){
+    const s=calc.weightSeries(barn);
+    if(s.length<2)return null;
+    const akhir=s[s.length-1];
+    // titik awal: timbangan paling lama yang masih di dalam jendela
+    let awal=s.slice(0,-1).find(p=>akhir.day-p.day<=jendela);
+    // tidak ada yang masuk jendela -> pakai timbangan sebelumnya, dan sebut rentang aslinya
+    if(!awal)awal=s[s.length-2];
+    const hari=akhir.day-awal.day;
+    if(!(hari>0))return null;
+    return {g:(akhir.avg-awal.avg)/hari*1000,hari,dariHari:awal.day,sampaiHari:akhir.day,
+            dalamJendela:hari<=jendela};},
   // Angka yang belum pernah disetel pemilik farm tidak dipakai menghitung apa pun.
   bawaan(k){return (MASTER.bawaan||[]).includes(k);},
   // Target milik BATCH, diketik pemilik saat batch dibuat. Bukan dari Pengaturan.
