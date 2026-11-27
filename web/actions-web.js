@@ -139,6 +139,13 @@ document.addEventListener('click',e=>{
   case 'pilih-batch':gantiBatch(d.v);break;
   case 'range':state.range=d.v;render();break;
   case 'barn':state.barn=d.v;render();break;
+  /* Lingkup halaman Populasi & Mortalitas: 'siklus' (bawaan) atau 'farm'.
+     Kalau kandang yang sedang dipilih tidak berisi di lingkup yang baru,
+     filternya dikembalikan ke Semua — supaya layar tidak menampilkan kandang
+     kosong tanpa penjelasan setelah lingkupnya diganti. */
+  case 'lingkup':{state.lingkup=d.v;
+    if(state.barn!=='ALL'&&!calc.barnsBerisi(d.v).some(b=>b.id===state.barn))state.barn='ALL';
+    render();break;}
   case 'ofilter':state.filters.os=d.v;render();break;
   case 'rep':state.filters.rep=d.v;render();break;
   case 'modal':openModal(d.m,{type:d.type,id:d.id,product:d.product,kind:d.kind});break;

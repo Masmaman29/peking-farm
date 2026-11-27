@@ -108,12 +108,23 @@ function drawCharts(){
   mkChart('ch-feed',{type:'bar',data:{labels,datasets:[{label:'Pakan (kg)',data:lastN(fb,n),backgroundColor:'rgba(168,208,141,.75)',borderRadius:6},lineDs('Rata-rata 7 hari',lastN(avg,n),C_GOLD,false,[4,4])]},options:baseOpts()});
   // FCR
   const fs=calc.fcrSeries();mkChart('ch-fcr',{type:'line',data:{labels:fs.map(x=>'H'+x.day),datasets:[lineDs('FCR',fs.map(x=>x.fcr?+x.fcr.toFixed(2):null),C_GOLD,true)]},options:baseOpts()});
-  // Mortality
-  const mb=calc.mortByDay();mkChart('ch-mort',{type:'bar',data:{labels,datasets:[{label:'Mati (ekor)',data:lastN(mb,n),backgroundColor:'rgba(217,83,79,.8)',borderRadius:6}]},options:baseOpts()});
-  // Population
-  const pop=days.map(d=>calc.population(null,new Date(dateOfDay(d).getTime()+86399000)));
+  /* Mortalitas & Populasi.
+     Di halaman Populasi & Mortalitas dengan lingkup "Seluruh farm", sumbunya
+     TANGGAL dan bukan umur hari. Umur hari hanya berlaku di dalam satu siklus:
+     hari ke-20 batch yang satu dan hari ke-20 batch yang lain jatuh pada
+     tanggal yang berbeda,
+     jadi menumpuknya di satu sumbu akan menjumlahkan dua hari yang tidak pernah
+     bersamaan. Dibatasi ke halaman itu — persis seperti filter kandang pada
+     grafik bobot di atas — supaya lingkup yang tertinggal tidak diam-diam
+     mengubah grafik di Dashboard. */
+  const farmGraf=state.page==='populasi'&&state.lingkup==='farm'&&DB.farmPopTx;
+  const seriT=farmGraf?calc.seriTanggal(Math.max(7,Math.min(30,n)),'farm'):null;
+  const labelsPM=seriT?seriT.map(x=>x.label):labels;
+  const mb=seriT?seriT.map(x=>x.mati):lastN(calc.mortByDay(),n);
+  mkChart('ch-mort',{type:'bar',data:{labels:labelsPM,datasets:[{label:'Mati (ekor)',data:mb,backgroundColor:'rgba(217,83,79,.8)',borderRadius:6}]},options:baseOpts()});
+  const pop=seriT?seriT.map(x=>x.pop):lastN(days.map(d=>calc.population(null,new Date(dateOfDay(d).getTime()+86399000))),n);
   const pOpts=baseOpts();pOpts.scales.y.beginAtZero=false;pOpts.scales.y.min=Math.floor(Math.min(...pop)/50)*50-50;
-  mkChart('ch-pop',{type:'line',data:{labels,datasets:[lineDs('Populasi',lastN(pop,n),C_SAGE,true)]},options:pOpts});
+  mkChart('ch-pop',{type:'line',data:{labels:labelsPM,datasets:[lineDs('Populasi',pop,C_SAGE,true)]},options:pOpts});
   // Finance: cost by category doughnut + cumulative cost/revenue/profit line
   const cbc=calc.costByCat();const cats=Object.keys(cbc);
   mkChart('ch-cost',{type:'doughnut',data:{labels:cats,datasets:[{data:cats.map(c=>cbc[c]),backgroundColor:['#A8D08D','#7FA68C','#C6A15B','#2E8B57','#D99A2B','#5B8C6E','#8FB29B','#E5C98A','#3F7A5C','#B7C9BD','#6C8E7A','#D9D6CC'],borderColor:'#0B241C',borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,cutout:'68%',plugins:{legend:{position:'right',labels:{color:CHART_DEF.color,boxWidth:10,usePointStyle:true,font:{size:10}}},tooltip:{callbacks:{label:c=>' '+rp(c.parsed)}}}}});
@@ -207,24 +218,28 @@ function batang(n,maks,warna){const w=maks>0?Math.max(2,Math.round(n/maks*100)):
      - mortalitas MURNI (afkir tidak ikut) dengan warna sesuai target
      - berapa hari berturut-turut kematian di atas batas
      - kerugian dalam rupiah, bukan cuma jumlah ekor */
-function kartuMortalitas(barn){
-  const p=calc.matiPisah(barn);
+function kartuMortalitas(barn,L){
+  const p=calc.matiPisah(barn,L);
   if(!p.total)return `<div class="card" style="margin-bottom:14px"><div class="card-h"><h3>Mortalitas</h3></div>
    <div class="alert ok">${ic('check',16)}<div><b>Belum ada kematian tercatat</b>Semua bebek yang masuk masih hidup menurut catatan.</div></div></div>`;
   /* Target yang berlaku untuk lingkup ini: batch -> kandang -> farm.
      Lihat calc.targetMati(). Asalnya ikut disebut di layar. */
   const T=calc.targetMati(barn);
-  const tgt=T.pct, mp=calc.mortPctMurni(barn), ap=calc.afkirPct(barn);
+  const tgt=T.pct, mp=calc.mortPctMurni(barn,L), ap=calc.afkirPct(barn,L);
   const lewat=!T.bawaan&&tgt>0&&mp!=null&&mp>tgt;
   const asal=T.dari==='batch'?'target batch ini':T.dari==='kandang'?'target kandang ini':'target farm';
-  const beruntun=calc.matiBeruntun(barn);
-  const rugi=calc.rugiMati(barn);   // lingkupnya ikut filter kandang, sama dengan kartu ini
+  const beruntun=calc.matiBeruntun(barn,L);
+  /* Perkiraan kerugian rupiah HANYA untuk lingkup siklus. Hitungannya memakai
+     umur bebek saat mati (dayOf), dan umur itu dihitung dari tanggal DOD
+     siklus yang sedang dibuka. Di lingkup seluruh farm umur batch lain akan
+     salah, jadi angkanya tidak ditampilkan daripada menampilkan angka keliru. */
+  const rugi=L?null:calc.rugiMati(barn);
   const angka=(l,v,u,k,warna)=>`<div style="border-left:3px solid ${warna||'var(--line)'};padding-left:14px">
     <div style="font-size:12px;color:var(--muted);margin-bottom:5px">${l}</div>
     <div><b class="num" style="font-size:24px${warna?`;color:${warna}`:''}">${v}</b>${u?` <small style="font-size:12px;color:var(--muted)">${u}</small>`:''}</div>
     <div style="font-size:11.5px;color:var(--dim);margin-top:4px">${k}</div></div>`;
   return `<div class="card" style="margin-bottom:14px">
-   <div class="card-h"><h3>Mortalitas${barn?' · '+barnName(barn):''}</h3><span class="sub">afkir dihitung terpisah</span></div>
+   <div class="card-h"><h3>Mortalitas${barn?' · '+barnName(barn):''}</h3><span class="sub">${L?'seluruh farm · ':''}afkir dihitung terpisah</span></div>
    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:20px">
     ${angka('Mati sendiri',num(p.mati),'ekor',mp==null?'&mdash;':`${pct(mp)} dari DOD masuk`,lewat?'#F2C46B':'var(--soft)')}
     ${angka('Afkir (disingkirkan)',num(p.afkir),'ekor',ap==null?'&mdash;':`${pct(ap)} dari DOD masuk`,'')}
@@ -246,7 +261,8 @@ function kartuMortalitas(barn){
      return `<div class="alert ok" style="margin-top:14px">${ic('check',16)}<div><b>Mortalitas ${pct(mp)} — masih di bawah ${asal} ${num(tgt,1)}%</b>${ekorAfkir}</div></div>`;})()}
    ${beruntun?`<div class="alert warn" style="margin-top:10px">${ic('clock',16)}<div><b>${beruntun.hari} hari berturut-turut kematian di atas batas ${beruntun.batas} ekor/hari</b>Sejak ${fmtDate(beruntun.sejak)}, total ${num(beruntun.ekor)} ekor. Bocor pelan seperti ini sering lolos dari grafik karena tidak terlihat sebagai lonjakan.</div></div>`:''}
    ${rugi?kerugianMati(rugi):''}
-   ${barn?'':tabelTargetKandang()}
+   ${L?`<p style="margin:14px 0 0;font-size:12px;color:var(--dim)">Perkiraan kerugian dalam rupiah tidak ditampilkan di lingkup seluruh farm, karena hitungannya memakai umur bebek saat mati dan umur itu beda-beda antar batch. Pilih "Siklus ini" untuk melihatnya.</p>`:''}
+   ${barn?'':tabelTargetKandang(L)}
   </div>`;}
 
 /* Perbandingan tiap kandang terhadap targetnya masing-masing — diminta Abdur
@@ -254,8 +270,13 @@ function kartuMortalitas(barn){
    terlihat biasa saja dan kandang bermasalah tidak pernah menonjol. Tabel ini
    menampilkan tiap kandang berjalan beserta target yang berlaku untuknya dan
    dari mana target itu berasal, supaya tidak ada kebingungan angka siapa. */
-function tabelTargetKandang(){
-  const r=(DB.targetMatiKandang||[]).filter(x=>x.dod>0);
+function tabelTargetKandang(L){
+  /* LINGKUPNYA DISAMAKAN dengan kartu di atasnya (27 Nov 2026). Sebelum ini
+     tabel ini selalu farm-wide sementara kartu di atasnya hanya siklus yang
+     dibuka — satu kartu memuat dua lingkup berbeda, persis cacat yang sudah
+     pernah diperbaiki di kartu kerugian. */
+  let r=(DB.targetMatiKandang||[]).filter(x=>x.dod>0);
+  if(L!=='farm'&&DB.cycle)r=r.filter(x=>x.batch===DB.cycle.code);
   if(r.length<2)return '';
   /* Dibatasi 15 baris supaya tetap terbaca di farm dengan banyak petak.
      Yang dipotong justru yang mortalitasnya paling rendah, karena urutannya
@@ -940,9 +961,36 @@ function pgSiklus(){const c=DB.cycle;const d=calc.day();const s=calc.sum();const
    ${s?`<tr style="border-top:2px solid rgba(255,255,255,.12)"><td colspan="3"><b>Total</b></td><td class="r num"><b>${num(s.harvestQty)}</b></td><td class="r num"><b>${num(s.harvestKg,1)} kg</b></td><td class="r num"><b>${s.harvestAvgKg?num(s.harvestAvgKg,2)+' kg':'—'}</b></td>${can('finance')?`<td></td><td class="r num"><b>${rp(s.revenue)}</b></td>`:''}<td></td></tr>`:''}</tbody></table></div>
    ${can('finance')&&s?`<div class="kv" style="margin-top:14px;row-gap:9px">${sumRow('Pendapatan',rp(s.revenue))}${sumRow('Modal DOD',rp(s.dodCost))}${sumRow('Biaya operasional',rp(s.cost-s.dodCost))}<span>Laba sampai sekarang</span><b class="num" style="color:${s.profit>=0?'var(--sage)':'#E8836F'}">${rp(s.profit)}</b>${sumRow('FCR akhir',s.fcr!=null?num(s.fcr,3):'—')}</div>`:''}</div>`:'')+
   `<div class="grid g-3" style="margin-top:14px">${kpi('Populasi',num(pop),'ekor',`${calc.mortTotal()} mati · ${calc.popBalance().panen} dipanen`,'','duck')}${kpi('Bobot rata-rata',calc.avgWeight()!=null?num(calc.avgWeight(),2):'—','kg',`Target H${d}: ${num(calc.target(d),2)} kg`,'','scale')}${kpi('Pakan kumulatif',num(calc.feedTotal()),'kg',`FCR ${s&&s.fcr!=null?num(s.fcr,3):(calc.fcr()?num(calc.fcr().fcr,2):'—')}`,'','feed')}</div>`);}
-function pgPopulasi(){const bf=state.barn==='ALL'?null:state.barn;const b=calc.popBalance(bf);const tab=state.tab||'ledger';
- return pageHead('Populasi & Mortalitas','Populasi tidak pernah diubah langsung. Setiap angka berasal dari transaksi: DOD masuk, transfer, kematian, panen, penjualan.',`${seg([['ALL','Semua'],...barnsWorking().map(b=>[b.id,b.name])],state.barn,'barn')}`)+
- `<div class="card" style="margin-bottom:14px"><div class="card-h"><h3>Balance Populasi ${state.barn==='ALL'?'':'· '+barnName(state.barn)}</h3></div>
+/* ---------- POPULASI & MORTALITAS ----------
+   LINGKUP. Halaman ini punya dua lingkup, diminta Abdur 27 Nov 2026:
+     "Siklus ini"   — hanya siklus yang sedang dibuka (seperti sebelumnya).
+     "Seluruh farm" — semua batch yang SEDANG JALAN.
+   Siklus yang sudah ditutup tidak ikut di dua-duanya; itu tetap di Riwayat.
+   Sebelum ini tombol "Semua" di halaman ini sebenarnya cuma berarti "semua
+   kandang di siklus yang dibuka". Di farm Bapak siklus yang dibuka hanya mengisi
+   satu kandang, jadi tombolnya cuma menawarkan "Semua" dan kandang itu, dan
+   dua-duanya memberi angka yang sama persis — tombol yang tidak melakukan apa
+   pun. Datanya sendiri sekarang dikirim server sebagai DB.farmPopTx dan
+   DB.farmMortality.
+   Tombol lingkupnya HANYA muncul kalau memang ada lebih dari satu batch yang
+   sedang jalan; kalau cuma satu, dua pilihan itu akan memberi angka yang sama
+   dan hanya menambah tombol yang tidak berguna. */
+function pgPopulasi(){
+ const batchJalan=[...new Set((DB.farmPopTx||[]).map(t=>t.batch).filter(Boolean))];
+ const adaPilihan=batchJalan.length>1;
+ const L=adaPilihan&&state.lingkup==='farm'?'farm':null;
+ const bf=state.barn==='ALL'?null:state.barn;
+ const b=calc.popBalance(bf,L);const tab=state.tab||'ledger';
+ const kandang=calc.barnsBerisi(L);
+ const judulL=L?`Seluruh farm · ${batchJalan.length} batch jalan`:DB.cycle?`Siklus ${DB.cycle.code}`:'Siklus ini';
+ const tombolL=adaPilihan?seg([['siklus','Siklus ini'],['farm','Seluruh farm']],L?'farm':'siklus','lingkup'):'';
+ const ket=L
+   ? `Angka di halaman ini mencakup ${batchJalan.length} batch yang sedang jalan: ${batchJalan.join(', ')}. Siklus yang sudah ditutup tidak ikut — itu ada di Riwayat.`
+   : DB.cycle?`Angka di halaman ini hanya siklus ${DB.cycle.code}.${adaPilihan?' Pilih "Seluruh farm" untuk melihat semua batch yang sedang jalan.':''}`:'';
+ return pageHead('Populasi & Mortalitas','Populasi tidak pernah diubah langsung. Setiap angka berasal dari transaksi: DOD masuk, transfer, kematian, panen, penjualan.',
+   `${tombolL}${seg([['ALL','Semua'],...kandang.map(x=>[x.id,x.name])],state.barn,'barn')}`)+
+ (ket?`<div class="lingkup-blok" style="margin-bottom:14px">${lingkup(L?'farm':'siklus',judulL,`${num(b.akhir)} ekor`,ket)}</div>`:'')+
+ `<div class="card" style="margin-bottom:14px"><div class="card-h"><h3>Balance Populasi ${state.barn==='ALL'?'':'· '+barnName(state.barn)}</h3><span class="sub">${L?'seluruh farm':'siklus ini'}</span></div>
   <div class="flow"><div class="n"><b class="num">${num(b.dod)}</b><small>Populasi awal (DOD)</small></div><span class="op">+</span><div class="n"><b class="num">${num(b.tIn)}</b><small>Transfer masuk</small></div><span class="op">−</span><div class="n neg"><b class="num">${num(b.mati)}</b><small>Kematian</small></div><span class="op">−</span><div class="n neg"><b class="num">${num(b.panen)}</b><small>Panen</small></div><span class="op">−</span><div class="n neg"><b class="num">${num(b.jual)}</b><small>Penjualan</small></div><span class="op">−</span><div class="n neg"><b class="num">${num(b.tOut)}</b><small>Transfer keluar</small></div><span class="op">=</span><div class="n res"><b class="num">${num(b.akhir)}</b><small>Populasi akhir</small></div></div>
   ${(()=>{
     /* DIPERBAIKI 26 Nov 2026 — dua cacat sekaligus.
@@ -957,11 +1005,15 @@ function pgPopulasi(){const bf=state.barn==='ALL'?null:state.barn;const b=calc.p
     return h!==b.akhir
       ? `<div class="alert warn" style="margin-top:14px">${ic('alert',16)}<div><b>Balance tidak cocok</b>Hasil hitung ${num(h)} ekor, populasi akhir ${num(b.akhir)} ekor — selisih ${num(Math.abs(h-b.akhir))} ekor. Laporkan dulu, jangan dipakai sebagai dasar keputusan.</div></div>`
       : `<div class="alert ok" style="margin-top:14px">${ic('check',16)}<div><b>Balance cocok</b>Jumlah seluruh transaksi sama dengan populasi akhir, jadi angka di halaman ini bisa dipakai.</div></div>`;})()}</div>
- ${kartuMortalitas(bf)}
- <div class="grid g-2" style="margin-bottom:14px">${chartCard('Populasi Harian','ch-pop',rangeSeg())}${chartCard('Mortalitas Harian','ch-mort','','', 'Batas normal '+MASTER.batasMortalitasHarian+' ekor/hari')}</div>
+ ${kartuMortalitas(bf,L)}
+ <div class="grid g-2" style="margin-bottom:14px">${chartCard('Populasi Harian','ch-pop',L?'':rangeSeg(),'',L?'per tanggal · seluruh farm':'')}${chartCard('Mortalitas Harian','ch-mort','','', 'Batas normal '+MASTER.batasMortalitasHarian+' ekor/hari'+(L?' · per tanggal, seluruh farm':''))}</div>
  <div class="tabs"><button class="${tab==='ledger'?'active':''}" data-act="tab" data-v="ledger">Ledger Transaksi</button><button class="${tab==='mort'?'active':''}" data-act="tab" data-v="mort">Catatan Kematian</button><button class="${tab==='lap'?'active':''}" data-act="tab" data-v="lap">Laporan Kematian</button></div>
- ${tab==='lap'?laporanMati():tab==='ledger'?`<div class="card"><div class="tbl-wrap"><table><thead><tr><th>Waktu</th><th>Jenis</th><th>Kandang</th><th class="r">Jumlah</th><th class="r">Saldo</th><th>Referensi</th><th>User</th><th>Status</th></tr></thead><tbody>${(()=>{let run=0;return DB.popTx.filter(t=>state.barn==='ALL'||t.barn===state.barn).slice().sort((a,b)=>a.date-b.date).map(t=>{run+=t.qty;return `<tr><td class="num">${fmtDT(t.date)}</td><td>${badge(t.qty>0?'ok':'danger',t.type.replace('_',' '))}</td><td>${barnName(t.barn)}</td><td class="r num" style="color:${t.qty>0?'var(--soft)':'#F29390'}">${t.qty>0?'+':''}${t.qty}</td><td class="r num"><b>${run}</b></td><td><code style="font-size:11px">${t.ref}</code></td><td>${userName(t.user)}</td><td>${t.locked?badge('neutral','TERKUNCI'):stBadge('RECORDED')}</td></tr>`;}).reverse().join('');})()}</tbody></table></div></div>`:
- `<div class="card"><div class="card-h"><h3>Catatan Kematian</h3>${state.user.role!=='ANAK_KANDANG'?`<button class="btn sm" data-act="modal" data-m="mort">${ic('plus',14)} Catat kematian</button>`:''}</div><div class="tbl-wrap"><table><thead><tr><th>Tanggal</th><th>Kandang</th><th class="r">Jumlah</th><th>Jenis</th><th>Penyebab</th><th>Bukti</th><th>User</th><th>Status</th><th></th></tr></thead><tbody>${DB.mortality.filter(m=>state.barn==='ALL'||m.barn===state.barn).slice().reverse().map(m=>`<tr><td class="num">${fmtDT(m.date)}</td><td>${barnName(m.barn)}</td><td class="r num"><b>${m.qty}</b>${(m.kind||'MATI')==='MATI'&&m.qty>=MASTER.batasMortalitasHarian?' '+badge('warn','WARNING'):''}</td><td>${(m.kind||'MATI')==='AFKIR'?badge('neutral','AFKIR'):badge('danger','MATI')}</td><td>${m.cause}</td><td>${photoChip(m.photo)}${fotoAsal(m.photoSource,m.photo)}</td><td>${userName(m.user)}</td><td>${m.locked?badge('neutral','TERKUNCI'):stBadge(m.status)}</td><td><button class="btn ghost sm" data-act="modal" data-m="correction" data-type="MORT" data-id="${m.id}">Ajukan koreksi</button></td></tr>`).join('')}</tbody></table></div></div>`}
+ ${tab==='lap'?laporanMati():tab==='ledger'?`<div class="card"><div class="tbl-wrap"><table><thead><tr><th>Waktu</th><th>Jenis</th>${L?'<th>Batch</th>':''}<th>Kandang</th><th class="r">Jumlah</th>${L?'':'<th class="r">Saldo</th>'}<th>Referensi</th><th>User</th><th>Status</th></tr></thead><tbody>${(()=>{
+   /* Kolom Saldo hanya ada di lingkup siklus. Saldo berjalan lintas batch
+      tidak punya arti: menjumlahkan transaksi tiga batch berurutan waktu
+      menghasilkan angka yang bukan populasi batch mana pun. */
+   let run=0;return calc.sumberPop(L).filter(t=>state.barn==='ALL'||t.barn===state.barn).slice().sort((a,b)=>a.date-b.date).map(t=>{run+=t.qty;return `<tr><td class="num">${fmtDT(t.date)}</td><td>${badge(t.qty>0?'ok':'danger',t.type.replace('_',' '))}</td>${L?`<td class="sub">${t.batch||'—'}</td>`:''}<td>${barnName(t.barn)}</td><td class="r num" style="color:${t.qty>0?'var(--soft)':'#F29390'}">${t.qty>0?'+':''}${t.qty}</td>${L?'':`<td class="r num"><b>${run}</b></td>`}<td><code style="font-size:11px">${t.ref}</code></td><td>${userName(t.user)}</td><td>${t.locked?badge('neutral','TERKUNCI'):stBadge('RECORDED')}</td></tr>`;}).reverse().join('');})()}</tbody></table></div></div>`:
+ `<div class="card"><div class="card-h"><h3>Catatan Kematian</h3>${state.user.role!=='ANAK_KANDANG'?`<button class="btn sm" data-act="modal" data-m="mort">${ic('plus',14)} Catat kematian</button>`:''}</div><div class="tbl-wrap"><table><thead><tr><th>Tanggal</th>${L?'<th>Batch</th>':''}<th>Kandang</th><th class="r">Jumlah</th><th>Jenis</th><th>Penyebab</th><th>Bukti</th><th>User</th><th>Status</th><th></th></tr></thead><tbody>${calc.sumberMati(L).filter(m=>state.barn==='ALL'||m.barn===state.barn).slice().reverse().map(m=>`<tr><td class="num">${fmtDT(m.date)}</td>${L?`<td class="sub">${m.batch||'—'}</td>`:''}<td>${barnName(m.barn)}</td><td class="r num"><b>${m.qty}</b>${(m.kind||'MATI')==='MATI'&&m.qty>=MASTER.batasMortalitasHarian?' '+badge('warn','WARNING'):''}</td><td>${(m.kind||'MATI')==='AFKIR'?badge('neutral','AFKIR'):badge('danger','MATI')}</td><td>${m.cause}</td><td>${photoChip(m.photo)}${fotoAsal(m.photoSource,m.photo)}</td><td>${userName(m.user)}</td><td>${m.locked?badge('neutral','TERKUNCI'):stBadge(m.status)}</td><td>${!L||(DB.cycle&&m.batch===DB.cycle.code)?`<button class="btn ghost sm" data-act="modal" data-m="correction" data-type="MORT" data-id="${m.id}">Ajukan koreksi</button>`:'<small style="color:var(--dim)">batch lain</small>'}</td></tr>`).join('')}</tbody></table></div></div>`}
  `;}
 
 function feedVersions(r){if(!r.versions.length)return '';return `<div style="margin-top:6px">${r.versions.map((v,i)=>`<div class="ver ${i===r.versions.length-1?'active':''}"><s>${i===0?r.kg:r.versions[i-1].kg} kg</s> → <b>${v.kg} kg</b> · ${v.reason} · disetujui ${userName(v.approvedBy)} ${fmtDT(v.date)}</div>`).join('')}</div>`;}

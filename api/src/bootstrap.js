@@ -128,7 +128,7 @@ export async function buildBootstrap(user, batchCode) {
   if (ak && user.barn_id) pilih = punya ? batches.find(b => b.cycle_id === punya.cycle_id) : pilih;
 
   /* ---- Gelombang 2: yang butuh id farm, sekaligus menentukan batch yang dibuka. ---- */
-  const [barns, users, products, prevCycles, batchHabisRows, cycle, asalDodRows, targetMatiRows] = await Promise.all([
+  const [barns, users, products, prevCycles, batchHabisRows, cycle, asalDodRows, targetMatiRows, farmPopRows, farmMortRows] = await Promise.all([
     rows('SELECT id,code,name,capacity,note,is_active FROM barn WHERE farm_id=$1 ORDER BY code', [farm.id]),
     rows(`SELECT id,name,role,barn_id,is_active,phone,email,last_login_at,archived_at FROM app_user WHERE farm_id=$1 ORDER BY role,name`, [farm.id]),
     rows('SELECT * FROM product WHERE farm_id=$1 ORDER BY type', [farm.id]),
@@ -146,6 +146,23 @@ export async function buildBootstrap(user, batchCode) {
     })(),
     rows('SELECT * FROM v_asal_dod WHERE farm_id=$1 ORDER BY penjual', [farm.id]),
     rows('SELECT * FROM v_target_mati_kandang WHERE farm_id=$1 ORDER BY barn_code', [farm.id]),
+    /* Lingkup SELURUH FARM untuk halaman Populasi & Mortalitas — diminta Abdur
+       27 Nov 2026. Sebelumnya halaman itu hanya pernah melihat siklus yang
+       dibuka, sehingga tombol "Semua" di sana sebenarnya berarti "semua kandang
+       di siklus ini" — di farm Abdur itu cuma satu kandang, jadi tombolnya
+       tidak melakukan apa-apa.
+       Hanya batch yang SEDANG JALAN yang ikut; siklus yang sudah ditutup tetap
+       di Riwayat (pilihan Abdur sendiri). */
+    rows(`SELECT t.id, t.occurred_at, t.type, t.barn_id, t.qty, t.created_by, t.ref_id, c.code AS cycle_code
+            FROM population_tx t JOIN cycle c ON c.id = t.cycle_id
+           WHERE c.farm_id = $1 AND c.status = 'ACTIVE' ORDER BY t.occurred_at`, [farm.id]),
+    rows(`SELECT m.id, m.occurred_at, m.barn_id, m.qty, m.cause, m.kind, m.note, m.status, m.locked,
+                 m.created_by, c.code AS cycle_code,
+                 (SELECT file_url FROM attachment a WHERE a.entity_type='mortality' AND a.entity_id=m.id ORDER BY version DESC LIMIT 1) photo,
+                 (SELECT a.source FROM attachment a WHERE a.entity_type='mortality' AND a.entity_id=m.id ORDER BY version DESC LIMIT 1) photo_source
+            FROM mortality m JOIN cycle c ON c.id = m.cycle_id
+           WHERE c.farm_id = $1 AND c.status = 'ACTIVE' AND m.deleted_at IS NULL AND m.status <> 'SUPERSEDED'
+           ORDER BY m.occurred_at`, [farm.id]),
   ]);
   const bcode = Object.fromEntries(barns.map(b => [b.id, b.code]));
 
@@ -266,6 +283,16 @@ export async function buildBootstrap(user, batchCode) {
       targetMati: b.target_mort_pct == null ? null : +b.target_mort_pct })),
     /* Mortalitas tiap kandang berjalan vs target yang berlaku, lengkap dengan
        asal targetnya (batch / kandang / farm) supaya layar bisa menyebutkannya. */
+    /* Bentuknya DISAMAKAN PERSIS dengan popTx dan mortality di atas, supaya
+       layar bisa menukar sumber datanya tanpa menulis ulang perhitungannya. */
+    farmPopTx: farmPopRows.map(t => ({ id: t.id, date: t.occurred_at,
+      type: t.type === 'DOD_IN' ? 'DOD_MASUK' : t.type === 'DEATH' ? 'KEMATIAN' : t.type === 'SALE' ? 'PENJUALAN'
+          : t.type === 'TRANSFER_IN' ? 'TRANSFER_MASUK' : t.type === 'TRANSFER_OUT' ? 'TRANSFER_KELUAR'
+          : t.type === 'HARVEST' ? 'PANEN' : t.type,
+      barn: bcode[t.barn_id], qty: t.qty, user: t.created_by, ref: t.ref_id, batch: t.cycle_code, locked: true })),
+    farmMortality: farmMortRows.map(m => ({ id: m.id, date: m.occurred_at, barn: bcode[m.barn_id], qty: m.qty,
+      cause: m.cause, kind: m.kind || 'MATI', note: m.note, photo: m.photo, photoSource: m.photo_source,
+      user: m.created_by, status: m.status, locked: m.locked, batch: m.cycle_code })),
     targetMatiKandang: targetMatiRows.map(r => ({
       barn: r.barn_code, nama: r.barn_name, batch: r.cycle_code,
       pop: r.population, dod: r.dod, mati: r.mati, afkir: r.afkir,

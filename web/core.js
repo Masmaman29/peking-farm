@@ -59,7 +59,11 @@ const pesanGagal=e=>e&&e.status===401?'Sesi sudah habis. Silakan masuk lagi.':(e
 const toDate=v=>v==null?v:(v instanceof Date?v:new Date(v));
 function hydrate(b){
   const d=x=>{if(!x)return x;['date','dodDate','createdAt','requestedAt','decidedAt','lastLogin','pickup'].forEach(k=>{if(x[k]!==undefined)x[k]=toDate(x[k]);});if(x.versions)x.versions.forEach(v=>v.date=toDate(v.date));return x;};
-  ['users','popTx','mortality','feedRecords','feedPurchases','feedAdjust','feedOpname','weights','health','barnCond','expenses','invTx','orders','corrections','audit','prevCycles'].forEach(k=>(b[k]||[]).forEach(d));
+  /* farmPopTx & farmMortality WAJIB ikut di daftar ini. Tanpa itu field date-nya
+     tetap berupa teks dari JSON, dan perbandingan tanggal (t.date<=date) jadi
+     teks-lawan-Date yang selalu salah — akibatnya populasi lingkup farm terbaca
+     0 ekor padahal transaksinya ada. Ketahuan uji 27 Nov 2026. */
+  ['users','popTx','mortality','farmPopTx','farmMortality','feedRecords','feedPurchases','feedAdjust','feedOpname','weights','health','barnCond','expenses','invTx','orders','corrections','audit','prevCycles'].forEach(k=>(b[k]||[]).forEach(d));
   if(b.cycle){d(b.cycle);b.cycle.dodDate.setHours(0,0,0,0);}
   (b.batches||[]).forEach(x=>{x.dodDate=toDate(x.dodDate);x.panen=toDate(x.panen);});
   b.products.forEach(p=>p.priceKg=p.price);
@@ -77,8 +81,43 @@ let MASTER={};let DEMO_TODAY=new Date();
 const calc = {
   day(){return DB.cycle?dayOf(DEMO_TODAY):0;},
   popTxUpTo(date){return DB.popTx.filter(t=>t.date<=date);},
-  population(barn=null,date=DEMO_TODAY){return DB.popTx.filter(t=>t.date<=date&&(!barn||t.barn===barn)).reduce((s,t)=>s+t.qty,0);},
-  popBalance(barn=null){const g=t=>DB.popTx.filter(x=>x.type===t&&(!barn||x.barn===barn)).reduce((s,x)=>s+Math.abs(x.qty),0);return{dod:g('DOD_MASUK'),tIn:g('TRANSFER_MASUK'),mati:g('KEMATIAN'),jual:g('PENJUALAN'),panen:g('PANEN'),tOut:g('TRANSFER_KELUAR'),akhir:calc.population(barn)};},
+  /* ---- LINGKUP ----
+     Semua angka di bawah ini pada dasarnya hanya siklus yang sedang dibuka,
+     karena server memang hanya mengirim transaksi siklus itu di DB.popTx dan
+     DB.mortality. Halaman Populasi & Mortalitas minta bisa melihat SELURUH
+     FARM (semua batch yang sedang jalan) — diminta Abdur 27 Nov 2026, karena
+     tombol "Semua" di sana sebenarnya cuma berarti "semua kandang di siklus
+     ini", dan di farm Bapak itu satu kandang saja, jadi tombolnya tidak
+     melakukan apa-apa.
+     Lingkupnya dikirim sebagai ARGUMEN, tidak disimpan sebagai saklar global.
+     Alasannya: mesin peringatan (calc.anomalies) dan Dashboard memanggil
+     fungsi yang sama saat halaman ini terbuka. Kalau lingkupnya saklar
+     global, lingkup farm akan diam-diam ikut mengubah peringatan dan
+     Dashboard tanpa ada yang meminta. Tanpa argumen = seperti sebelumnya. */
+  sumberPop(l){return l==='farm'&&DB.farmPopTx?DB.farmPopTx:DB.popTx;},
+  sumberMati(l){return l==='farm'&&DB.farmMortality?DB.farmMortality:(DB.mortality||[]);},
+  population(barn=null,date=DEMO_TODAY,lingkup){return calc.sumberPop(lingkup).filter(t=>t.date<=date&&(!barn||t.barn===barn)).reduce((s,t)=>s+t.qty,0);},
+  popBalance(barn=null,lingkup){const src=calc.sumberPop(lingkup);const g=t=>src.filter(x=>x.type===t&&(!barn||x.barn===barn)).reduce((s,x)=>s+Math.abs(x.qty),0);return{dod:g('DOD_MASUK'),tIn:g('TRANSFER_MASUK'),mati:g('KEMATIAN'),jual:g('PENJUALAN'),panen:g('PANEN'),tOut:g('TRANSFER_KELUAR'),akhir:calc.population(barn,DEMO_TODAY,lingkup)};},
+  /* Kandang yang BERISI dalam lingkup tertentu — dipakai tombol filter kandang
+     supaya daftarnya ikut lingkup yang dipilih, bukan selalu siklus yang dibuka. */
+  barnsBerisi(lingkup){const a=(DB.barns||[]).filter(b=>b.active!==false&&calc.population(b.id,DEMO_TODAY,lingkup)>0);return a.length?a:(DB.barns||[]).filter(b=>b.active!==false);},
+  /* Seri harian untuk lingkup farm — sumbunya TANGGAL, bukan umur hari.
+     Umur hari hanya berlaku di dalam satu siklus: hari ke-20 batch yang satu dan hari ke-20 batch
+     yang lain jatuh pada tanggal yang berbeda, jadi menumpuknya di satu
+     sumbu akan menjumlahkan dua hari yang tidak pernah bersamaan. */
+  seriTanggal(hari,lingkup){
+    const z=MASTER.zonaWaktu||DB.zonaWaktu||'Asia/Jakarta';
+    const kunci=d=>{try{return new Intl.DateTimeFormat('en-CA',{timeZone:z,year:'numeric',month:'2-digit',day:'2-digit'}).format(d);}catch(e){return new Date(d).toISOString().slice(0,10);}};
+    const mati={};
+    calc.sumberMati(lingkup).forEach(m=>{const k=kunci(toDate(m.date));mati[k]=(mati[k]||0)+(+m.qty||0);});
+    const out=[];
+    for(let i=hari-1;i>=0;i--){
+      const d=new Date(DEMO_TODAY.getTime()-i*86400000);
+      const k=kunci(d);
+      const akhirHari=new Date(new Date(k+'T00:00:00Z').getTime()+86399000);
+      out.push({kunci:k,label:k.slice(8)+'/'+k.slice(5,7),mati:mati[k]||0,
+        pop:calc.population(null,akhirHari,lingkup)});}
+    return out;},
   mortTotal(barn=null){return DB.mortality.filter(m=>!barn||m.barn===barn).reduce((s,m)=>s+m.qty,0);},
   mortPct(){return DB.cycle&&DB.cycle.dodQty?calc.mortTotal()/DB.cycle.dodQty*100:0;},
   mortByDay(){const a=Array(calc.day()).fill(0);DB.mortality.forEach(m=>{const d=dayOf(m.date);if(d>=1&&d<=a.length)a[d-1]+=m.qty;});return a;},
@@ -396,8 +435,8 @@ const calc = {
      Dua-duanya mengurangi populasi dan dua-duanya rugi, tapi artinya beda:
      mati itu gejala, afkir itu keputusan peternak. Dicampur, persentase
      mortalitas tidak bisa dipakai menilai apa pun. */
-  matiPisah(barn){
-    const m=(DB.mortality||[]).filter(x=>!barn||x.barn===barn);
+  matiPisah(barn,lingkup){
+    const m=calc.sumberMati(lingkup).filter(x=>!barn||x.barn===barn);
     const j=k=>m.filter(x=>(x.kind||'MATI')===k).reduce((s,x)=>s+(+x.qty||0),0);
     return {mati:j('MATI'),afkir:j('AFKIR'),total:j('MATI')+j('AFKIR')};},
   /* Target kematian yang BERLAKU, beserta asalnya.
@@ -419,26 +458,26 @@ const calc = {
     if(b&&b.targetMati!=null)return {pct:b.targetMati,dari:'kandang',bawaan:false};
     return farm;},
   /* Persentase mortalitas MURNI — afkir tidak ikut. Pembaginya DOD masuk. */
-  mortPctMurni(barn){
-    const dod=calc.popBalance(barn).dod;
+  mortPctMurni(barn,lingkup){
+    const dod=calc.popBalance(barn,lingkup).dod;
     if(!(dod>0))return null;
-    return calc.matiPisah(barn).mati/dod*100;},
-  afkirPct(barn){
-    const dod=calc.popBalance(barn).dod;
+    return calc.matiPisah(barn,lingkup).mati/dod*100;},
+  afkirPct(barn,lingkup){
+    const dod=calc.popBalance(barn,lingkup).dod;
     if(!(dod>0))return null;
-    return calc.matiPisah(barn).afkir/dod*100;},
+    return calc.matiPisah(barn,lingkup).afkir/dod*100;},
   /* ---- Berapa hari berturut-turut kematian di atas batas ----
      Bocor pelan 4 ekor/hari selama dua minggu lebih merugikan daripada satu
      lonjakan 50 ekor, tapi yang terlihat di grafik cuma lonjakannya. Hitung
      mundur dari hari terakhir yang ada catatannya. Afkir tidak dihitung —
      itu keputusan, bukan gejala. */
-  matiBeruntun(barn){
+  matiBeruntun(barn,lingkup){
     const batas=+MASTER.batasMortalitasHarian;
     if(!(batas>0)||!DB.cycle)return null;
     const z=MASTER.zonaWaktu||DB.zonaWaktu||'Asia/Jakarta';
     const hari=d=>{try{return new Intl.DateTimeFormat('en-CA',{timeZone:z,year:'numeric',month:'2-digit',day:'2-digit'}).format(d);}catch(e){return new Date(d).toISOString().slice(0,10);}};
     const perHari={};
-    (DB.mortality||[]).filter(x=>(!barn||x.barn===barn)&&(x.kind||'MATI')==='MATI')
+    calc.sumberMati(lingkup).filter(x=>(!barn||x.barn===barn)&&(x.kind||'MATI')==='MATI')
       .forEach(x=>{const k=hari(toDate(x.date));perHari[k]=(perHari[k]||0)+(+x.qty||0);});
     const tgl=Object.keys(perHari).sort();
     if(!tgl.length)return null;
