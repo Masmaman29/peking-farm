@@ -541,15 +541,19 @@ export const ACTIONS = {
     // Target mortalitas memang tingkat farm (jarang berubah), jadi kalau tidak
     // diketik di form, dipakai angka farm dari Pengaturan.
     const mortFarm = +((await c.query(`SELECT value FROM master_config WHERE key='target_mortalitas_pct'`)).rows[0]?.value || 0);
+    /* Dibedakan: angka yang DIISI pengguna vs yang disalin dari target farm.
+       Lihat migrasi 025 — tanpa pembedaan ini, target kandang tidak akan
+       pernah terpakai karena tiap batch selalu membawa salinan target farm. */
+    const targetMortManual = v.targetMortPct != null;
     const targetMort = v.targetMortPct ?? (mortFarm || null);
     if (targetMort == null) throw new ActionError('Target mortalitas belum diatur. Isi di Pengaturan \u2192 Master Data.');
     const qty = v.barns.reduce((a, x) => a + x.qty, 0);
 
     const asalDod = v.asalDod && v.asalDod.length ? v.asalDod : null;
 
-    const cy = (await c.query(`INSERT INTO cycle(farm_id,code,breed,dod_date,dod_qty,dod_price,target_curve,target_days,status,stage,locked,created_by,dod_weight_kg,target_weight_min,target_weight_max,target_mort_pct,dod_source)
-      VALUES ($1,$2,COALESCE($3,'Bebek Peking'),$4,$5,$6,$7,$8,'ACTIVE','DOD_IN',true,$9,$10,$11,$12,$13,$14) RETURNING id`,
-      [farm.id, code, v.breed || null, v.dodDate, qty, v.dodPrice, JSON.stringify(curve), v.targetDays, user.id, bobotDod, v.targetBobotMin, bobotMax, targetMort, asalDod])).rows[0].id;
+    const cy = (await c.query(`INSERT INTO cycle(farm_id,code,breed,dod_date,dod_qty,dod_price,target_curve,target_days,status,stage,locked,created_by,dod_weight_kg,target_weight_min,target_weight_max,target_mort_pct,target_mort_manual,dod_source)
+      VALUES ($1,$2,COALESCE($3,'Bebek Peking'),$4,$5,$6,$7,$8,'ACTIVE','DOD_IN',true,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
+      [farm.id, code, v.breed || null, v.dodDate, qty, v.dodPrice, JSON.stringify(curve), v.targetDays, user.id, bobotDod, v.targetBobotMin, bobotMax, targetMort, targetMortManual, asalDod])).rows[0].id;
     if (v.jatah) await c.query('UPDATE cycle SET feed_plan=$1 WHERE id=$2', [JSON.stringify(jadiPlan(v.jatah)), cy]);
 
     for (const b of v.barns) {
@@ -682,7 +686,9 @@ export const ACTIONS = {
   /* Ubah target batch yang sedang berjalan. Jumlah/harga/tanggal DOD tetap terkunci. */
   async CYCLE_TARGET(c, p, user) {
     need(user, ['OWNER', 'MANAGER']);
-    const v = z.object({ code: z.string().min(1), targetDays: z.number().int().positive().max(200), targetBobotMin: z.number().positive().max(20), bobotDodKg: z.number().nonnegative().max(5).optional(), jatah: skemaJatah.optional() }).parse(p);
+    const v = z.object({ code: z.string().min(1), targetDays: z.number().int().positive().max(200), targetBobotMin: z.number().positive().max(20), bobotDodKg: z.number().nonnegative().max(5).optional(),
+      /* targetMati: null berarti "ikut target kandang/farm" (manual dicabut). */
+      targetMati: z.number().positive().max(100).nullish(), jatah: skemaJatah.optional() }).parse(p);
     const cy = (await c.query(`SELECT * FROM cycle WHERE code=$1 AND status='ACTIVE'`, [v.code])).rows[0];
     if (!cy) throw new ActionError('Batch tidak ditemukan atau sudah ditutup.');
     const dodLama = cy.dod_weight_kg != null && +cy.dod_weight_kg > 0 ? +cy.dod_weight_kg : null;
@@ -691,6 +697,18 @@ export const ACTIONS = {
     const curve = dod != null ? [[1, dod], [v.targetDays, v.targetBobotMin]] : [[v.targetDays, v.targetBobotMin]];
     await c.query(`UPDATE cycle SET target_days=$1, target_weight_min=$2, target_weight_max=$2, dod_weight_kg=$3, target_curve=$4, updated_by=$5, updated_at=now() WHERE id=$6`,
       [v.targetDays, v.targetBobotMin, dod, JSON.stringify(curve), user.id, cy.id]);
+    if (v.targetMati !== undefined) {
+      if (v.targetMati == null) {
+        /* Dicabut: angkanya ditinggal apa adanya sebagai catatan, tapi tidak
+           lagi dianggap pilihan sadar, jadi target kandang/farm yang dipakai. */
+        await c.query(`UPDATE cycle SET target_mort_manual=false, updated_by=$1, updated_at=now() WHERE id=$2`, [user.id, cy.id]);
+      } else {
+        await c.query(`UPDATE cycle SET target_mort_pct=$1, target_mort_manual=true, updated_by=$2, updated_at=now() WHERE id=$3`, [v.targetMati, user.id, cy.id]);
+      }
+      const lama = cy.target_mort_manual ? `${+cy.target_mort_pct}%` : 'ikut kandang/farm';
+      const baru = v.targetMati == null ? 'ikut kandang/farm' : `${v.targetMati}%`;
+      if (lama !== baru) await audit(c, user.id, 'UPDATE', 'cycle', `Target mortalitas batch ${cy.code} diubah — ${lama} → ${baru}`, cy.id);
+    }
     await audit(c, user.id, 'UPDATE', 'cycle', `Target batch ${cy.code} diubah — panen ${cy.target_days} → ${v.targetDays} hari; bobot ${+cy.target_weight_min} → ${v.targetBobotMin} kg; bobot DOD ${dodLama ?? 'kosong'} → ${dod ?? 'kosong'} kg`, cy.id);
     if (v.jatah) {
       await c.query('UPDATE cycle SET feed_plan=$1, updated_by=$2, updated_at=now() WHERE id=$3', [JSON.stringify(jadiPlan(v.jatah)), user.id, cy.id]);
@@ -813,27 +831,34 @@ export const ACTIONS = {
   /* ---------------- KANDANG ---------------- */
   async BARN_CREATE(c, p, user) {
     need(user, ['OWNER']);
-    const v = z.object({ code: z.string().trim().min(1).max(4), name: z.string().trim().min(2), capacity: z.number().int().positive('Kapasitas harus lebih dari 0.'), note: z.string().trim().optional() }).parse(p);
+    /* targetMati: target mortalitas khusus kandang ini (migrasi 025). Boleh
+       dikosongkan — kandang tanpa target ikut target farm. */
+    const v = z.object({ code: z.string().trim().min(1).max(4), name: z.string().trim().min(2), capacity: z.number().int().positive('Kapasitas harus lebih dari 0.'),
+      targetMati: z.number().positive().max(100).nullish(), note: z.string().trim().optional() }).parse(p);
     const code = v.code.toUpperCase();
     if (!/^[A-Z0-9]+$/.test(code)) throw new ActionError('Kode kandang hanya huruf/angka, contoh: D atau K4.');
     const farm = (await c.query('SELECT id FROM farm LIMIT 1')).rows[0];
     const dup = (await c.query('SELECT id FROM barn WHERE farm_id=$1 AND code=$2', [farm.id, code])).rows[0];
     if (dup) throw new ActionError(`Kode kandang "${code}" sudah dipakai.`);
-    const r = await c.query(`INSERT INTO barn(farm_id,code,name,capacity,note) VALUES ($1,$2,$3,$4,NULLIF($5,'')) RETURNING id`, [farm.id, code, v.name, v.capacity, v.note || '']);
-    await audit(c, user.id, 'CREATE', 'barn', `Kandang ${v.name} (${code}) dibuat \u2014 kapasitas ${v.capacity} ekor`, r.rows[0].id, null, { code, name: v.name, capacity: v.capacity });
+    const r = await c.query(`INSERT INTO barn(farm_id,code,name,capacity,target_mort_pct,note) VALUES ($1,$2,$3,$4,$5,NULLIF($6,'')) RETURNING id`, [farm.id, code, v.name, v.capacity, v.targetMati ?? null, v.note || '']);
+    await audit(c, user.id, 'CREATE', 'barn', `Kandang ${v.name} (${code}) dibuat \u2014 kapasitas ${v.capacity} ekor${v.targetMati ? `, target mati ${v.targetMati}%` : ''}`, r.rows[0].id, null, { code, name: v.name, capacity: v.capacity, targetMati: v.targetMati ?? null });
     return { id: r.rows[0].id };
   },
   async BARN_UPDATE(c, p, user) {
     need(user, ['OWNER']);
-    const v = z.object({ code: z.string().trim().min(1), name: z.string().trim().min(2), capacity: z.number().int().positive('Kapasitas harus lebih dari 0.'), note: z.string().trim().optional() }).parse(p);
-    const b = (await c.query('SELECT id,code,name,capacity,note FROM barn WHERE code=$1', [v.code.toUpperCase()])).rows[0];
+    const v = z.object({ code: z.string().trim().min(1), name: z.string().trim().min(2), capacity: z.number().int().positive('Kapasitas harus lebih dari 0.'),
+      targetMati: z.number().positive().max(100).nullish(), note: z.string().trim().optional() }).parse(p);
+    const b = (await c.query('SELECT id,code,name,capacity,target_mort_pct,note FROM barn WHERE code=$1', [v.code.toUpperCase()])).rows[0];
     if (!b) throw new ActionError('Kandang tidak ditemukan.');
     const pop = +(await c.query('SELECT COALESCE(SUM(population),0) n FROM v_population WHERE barn_id=$1', [b.id])).rows[0].n;
     if (v.capacity < pop) throw new ActionError(`Kapasitas tidak boleh di bawah populasi saat ini (${pop} ekor).`);
-    await c.query(`UPDATE barn SET name=$1, capacity=$2, note=NULLIF($3,''), updated_at=now() WHERE id=$4`, [v.name, v.capacity, v.note || '', b.id]);
+    const tgtBaru = v.targetMati ?? null;
+    await c.query(`UPDATE barn SET name=$1, capacity=$2, target_mort_pct=$3, note=NULLIF($4,''), updated_at=now() WHERE id=$5`, [v.name, v.capacity, tgtBaru, v.note || '', b.id]);
     const diff = [];
     if (b.name !== v.name) diff.push(`nama ${b.name} \u2192 ${v.name}`);
     if (b.capacity !== v.capacity) diff.push(`kapasitas ${b.capacity} \u2192 ${v.capacity}`);
+    const tgtLama = b.target_mort_pct == null ? null : +b.target_mort_pct;
+    if (tgtLama !== tgtBaru) diff.push(`target mati ${tgtLama == null ? 'ikut farm' : tgtLama + '%'} \u2192 ${tgtBaru == null ? 'ikut farm' : tgtBaru + '%'}`);
     if ((b.note || '') !== (v.note || '')) diff.push('catatan diubah');
     await audit(c, user.id, 'UPDATE', 'barn', `Kandang ${v.name}${diff.length ? ' \u2014 ' + diff.join('; ') : ''}`, b.id, { name: b.name, capacity: b.capacity, note: b.note }, { name: v.name, capacity: v.capacity, note: v.note || null });
     return {};

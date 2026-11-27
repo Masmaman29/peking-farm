@@ -128,7 +128,7 @@ export async function buildBootstrap(user, batchCode) {
   if (ak && user.barn_id) pilih = punya ? batches.find(b => b.cycle_id === punya.cycle_id) : pilih;
 
   /* ---- Gelombang 2: yang butuh id farm, sekaligus menentukan batch yang dibuka. ---- */
-  const [barns, users, products, prevCycles, batchHabisRows, cycle, asalDodRows] = await Promise.all([
+  const [barns, users, products, prevCycles, batchHabisRows, cycle, asalDodRows, targetMatiRows] = await Promise.all([
     rows('SELECT id,code,name,capacity,note,is_active FROM barn WHERE farm_id=$1 ORDER BY code', [farm.id]),
     rows(`SELECT id,name,role,barn_id,is_active,phone,email,last_login_at,archived_at FROM app_user WHERE farm_id=$1 ORDER BY role,name`, [farm.id]),
     rows('SELECT * FROM product WHERE farm_id=$1 ORDER BY type', [farm.id]),
@@ -145,6 +145,7 @@ export async function buildBootstrap(user, batchCode) {
         : one(`SELECT * FROM cycle WHERE farm_id=$1 AND status='ACTIVE' ORDER BY dod_date LIMIT 1`, [farm.id]);
     })(),
     rows('SELECT * FROM v_asal_dod WHERE farm_id=$1 ORDER BY penjual', [farm.id]),
+    rows('SELECT * FROM v_target_mati_kandang WHERE farm_id=$1 ORDER BY barn_code', [farm.id]),
   ]);
   const bcode = Object.fromEntries(barns.map(b => [b.id, b.code]));
 
@@ -260,7 +261,16 @@ export async function buildBootstrap(user, batchCode) {
     },
     farm: { id: farm.id, name: farm.name, location: farm.location },
     users: users.map(u => ({ id: u.id, name: u.name, role: u.role, barn: bcode[u.barn_id] || null, active: u.is_active, phone: u.phone, email: u.email, lastLogin: u.last_login_at, archived: !!u.archived_at })),
-    barns: barns.map(b => ({ id: b.code, uuid: b.id, name: b.name, cap: b.capacity, note: b.note, active: b.is_active })),
+    barns: barns.map(b => ({ id: b.code, uuid: b.id, name: b.name, cap: b.capacity, note: b.note, active: b.is_active,
+      /* Target mortalitas khusus kandang ini (migrasi 025). null = ikut target farm. */
+      targetMati: b.target_mort_pct == null ? null : +b.target_mort_pct })),
+    /* Mortalitas tiap kandang berjalan vs target yang berlaku, lengkap dengan
+       asal targetnya (batch / kandang / farm) supaya layar bisa menyebutkannya. */
+    targetMatiKandang: targetMatiRows.map(r => ({
+      barn: r.barn_code, nama: r.barn_name, batch: r.cycle_code,
+      pop: r.population, dod: r.dod, mati: r.mati, afkir: r.afkir,
+      matiPct: r.mati_pct == null ? null : +r.mati_pct,
+      target: r.target_pct == null ? null : +r.target_pct, dari: r.target_dari })),
     barnPop,
     barnGerakTerakhir,
     batches: batches.map(b => ({
@@ -268,7 +278,7 @@ export async function buildBootstrap(user, batchCode) {
       dodDate: b.dod_date, dodQty: b.dod_qty, targetDays: b.target_days, stage: b.stage,
       population: b.population, umur: b.umur_hari, panen: b.perkiraan_panen, sisaHari: b.sisa_hari,
     })),
-    cycle: cycle ? { id: cycle.id, code: cycle.code, breed: cycle.breed, status: 'AKTIF', dodDate: cycle.dod_date, dodQty: cycle.dod_qty, dodPrice: fin ? +cycle.dod_price : null, dodWeight: +cycle.dod_weight_kg, targetDays: cycle.target_days, targetWeight: [+cycle.target_weight_min, +cycle.target_weight_max], targetCurve: cycle.target_curve || [], jatah: cycle.feed_plan ? cycle.feed_plan.map(r => +r[2]) : null, targetMort: +cycle.target_mort_pct, stage: cycle.stage, asalDod: cycle.dod_source || null, createdBy: cycle.created_by, createdAt: cycle.created_at } : null,
+    cycle: cycle ? { id: cycle.id, code: cycle.code, breed: cycle.breed, status: 'AKTIF', dodDate: cycle.dod_date, dodQty: cycle.dod_qty, dodPrice: fin ? +cycle.dod_price : null, dodWeight: +cycle.dod_weight_kg, targetDays: cycle.target_days, targetWeight: [+cycle.target_weight_min, +cycle.target_weight_max], targetCurve: cycle.target_curve || [], jatah: cycle.feed_plan ? cycle.feed_plan.map(r => +r[2]) : null, targetMort: +cycle.target_mort_pct, targetMortManual: !!cycle.target_mort_manual, stage: cycle.stage, asalDod: cycle.dod_source || null, createdBy: cycle.created_by, createdAt: cycle.created_at } : null,
     prevCycles: prevCycles.map(c => ({
       id: c.cycle_id, code: c.code, breed: c.breed, status: c.status === 'CLOSED' ? 'DITUTUP' : 'SELESAI',
       dodDate: c.dod_date, dodQty: c.dod_qty, closedAt: c.closed_at, closeNote: c.close_note,

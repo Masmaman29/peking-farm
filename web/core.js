@@ -373,6 +373,24 @@ const calc = {
     const m=(DB.mortality||[]).filter(x=>!barn||x.barn===barn);
     const j=k=>m.filter(x=>(x.kind||'MATI')===k).reduce((s,x)=>s+(+x.qty||0),0);
     return {mati:j('MATI'),afkir:j('AFKIR'),total:j('MATI')+j('AFKIR')};},
+  /* Target kematian yang BERLAKU, beserta asalnya.
+     Urutan: batch -> kandang -> farm. Yang paling khusus menang, dan asalnya
+     ikut dikembalikan supaya layar bisa menyebutkan angka mana yang sedang
+     dipakai menilai — Abdur tidak boleh sampai bingung target siapa ini.
+     bawaan=true berarti angkanya belum pernah disahkan pemilik, jadi layar
+     tidak boleh memberi vonis bagus/jelek dari angka itu. */
+  targetMati(barn){
+    const farmPct=+MASTER.targetMortalitasPct;
+    const farm={pct:farmPct>0?farmPct:null,dari:'farm',bawaan:calc.bawaan('targetMortalitasPct')};
+    if(!barn)return farm;
+    /* Sumbernya v_target_mati_kandang, yang sudah menerapkan urutan
+       batch(manual) -> kandang -> farm di database. Layar tidak menghitung
+       ulang urutannya sendiri supaya tidak ada dua versi aturan. */
+    const row=(DB.targetMatiKandang||[]).find(x=>x.barn===barn);
+    if(row&&row.target!=null&&row.dari!=='farm')return {pct:row.target,dari:row.dari,bawaan:false};
+    const b=(DB.barns||[]).find(x=>x.id===barn);
+    if(b&&b.targetMati!=null)return {pct:b.targetMati,dari:'kandang',bawaan:false};
+    return farm;},
   /* Persentase mortalitas MURNI — afkir tidak ikut. Pembaginya DOD masuk. */
   mortPctMurni(barn){
     const dod=calc.popBalance(barn).dod;

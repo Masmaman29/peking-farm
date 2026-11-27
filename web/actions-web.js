@@ -362,8 +362,13 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
       toast('Akun Owner dibuat. Silakan masuk.');state.view='login';}
     catch(err){toast(err.message||'Gagal membuat akun.','err');}
     finally{state.busy=false;render();}break;}
-  case 'submit-barn':{const r=await act('BARN_CREATE',{code:(v.code||'').toUpperCase(),name:v.name,capacity:+v.capacity,note:v.note||undefined});if(r){closeModal();toast(`${v.name} ditambahkan.`);render();}break;}
-  case 'submit-barn-edit':{const r=await act('BARN_UPDATE',{code:f.dataset.id,name:v.name,capacity:+v.capacity,note:v.note||''});if(r){closeModal();toast('Data kandang diperbarui.');render();}break;}
+  /* targetMati kosong = ikut target farm, jadi dikirim null, bukan 0. */
+  case 'submit-barn':{const tm=(v.targetMati||'').trim();
+    const r=await act('BARN_CREATE',{code:(v.code||'').toUpperCase(),name:v.name,capacity:+v.capacity,targetMati:tm?+tm:null,note:v.note||undefined});
+    if(r){closeModal();toast(`${v.name} ditambahkan.`);render();}break;}
+  case 'submit-barn-edit':{const tm=(v.targetMati||'').trim();
+    const r=await act('BARN_UPDATE',{code:f.dataset.id,name:v.name,capacity:+v.capacity,targetMati:tm?+tm:null,note:v.note||''});
+    if(r){closeModal();toast('Data kandang diperbarui.');render();}break;}
   case 'submit-user-edit':{const r=await act('USER_UPDATE',{id:f.dataset.id,name:v.name,role:v.role,barn:v.barn||undefined,phone:v.phone,email:v.email||''});if(r){closeModal();toast('Data pengguna diperbarui.');render();}break;}
   case 'submit-password':{if(v.password!==v.confirm){toast('Password baru dan ulangannya tidak sama.','err');return;}const r=await act('USER_PASSWORD',{id:f.dataset.id,current:v.current||undefined,password:v.password});if(r){closeModal();toast(r.self?'Password Anda diganti. Perangkat lain diminta login ulang.':'Password pengguna diatur ulang.');render();}break;}
   case 'submit-verify':{const r=await act('ANOMALY_VERIFY',{id:f.dataset.id,note:v.note});if(r){closeModal();toast('Anomali ditandai terverifikasi.');render();}break;}

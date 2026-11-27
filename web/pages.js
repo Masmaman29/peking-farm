@@ -208,9 +208,12 @@ function kartuMortalitas(barn){
   const p=calc.matiPisah(barn);
   if(!p.total)return `<div class="card" style="margin-bottom:14px"><div class="card-h"><h3>Mortalitas</h3></div>
    <div class="alert ok">${ic('check',16)}<div><b>Belum ada kematian tercatat</b>Semua bebek yang masuk masih hidup menurut catatan.</div></div></div>`;
-  const tgt=+MASTER.targetMortalitasPct;
-  const mp=calc.mortPctMurni(barn), ap=calc.afkirPct(barn);
-  const lewat=!calc.bawaan('targetMortalitasPct')&&tgt>0&&mp!=null&&mp>tgt;
+  /* Target yang berlaku untuk lingkup ini: batch -> kandang -> farm.
+     Lihat calc.targetMati(). Asalnya ikut disebut di layar. */
+  const T=calc.targetMati(barn);
+  const tgt=T.pct, mp=calc.mortPctMurni(barn), ap=calc.afkirPct(barn);
+  const lewat=!T.bawaan&&tgt>0&&mp!=null&&mp>tgt;
+  const asal=T.dari==='batch'?'target batch ini':T.dari==='kandang'?'target kandang ini':'target farm';
   const beruntun=calc.matiBeruntun(barn);
   const rugi=calc.rugiMati(barn);   // lingkupnya ikut filter kandang, sama dengan kartu ini
   const angka=(l,v,u,k,warna)=>`<div style="border-left:3px solid ${warna||'var(--line)'};padding-left:14px">
@@ -223,7 +226,7 @@ function kartuMortalitas(barn){
     ${angka('Mati sendiri',num(p.mati),'ekor',mp==null?'&mdash;':`${pct(mp)} dari DOD masuk`,lewat?'#F2C46B':'var(--soft)')}
     ${angka('Afkir (disingkirkan)',num(p.afkir),'ekor',ap==null?'&mdash;':`${pct(ap)} dari DOD masuk`,'')}
     ${angka('Berkurang seluruhnya',num(p.total),'ekor','mati + afkir','')}
-    ${tgt>0&&!calc.bawaan('targetMortalitasPct')?angka('Target Bapak','&lt; '+num(tgt,1),'%','hanya untuk yang mati sendiri',''):''}
+    ${tgt>0&&!T.bawaan?angka('Target yang berlaku','&lt; '+num(tgt,1),'%',`${asal} \u00b7 hanya untuk yang mati sendiri`,''):''}
    </div>
    ${(()=>{
      /* Tiga keadaan, bukan dua. Ketahuan di produksi 26 Nov 2026: target
@@ -233,14 +236,51 @@ function kartuMortalitas(barn){
         pemilik, aplikasi tidak boleh memberi vonis sama sekali; cukup
         tampilkan angkanya dan katakan targetnya belum diatur. */
      if(mp==null)return '';
-     const belumDiatur=!(tgt>0)||calc.bawaan('targetMortalitasPct');
+     const belumDiatur=!(tgt>0)||T.bawaan;
      const ekorAfkir=`Afkir ${num(p.afkir)} ekor tidak ikut dihitung di angka ini.`;
      if(belumDiatur)return `<div class="alert info" style="margin-top:14px">${ic('alert',16)}<div><b>Mortalitas ${pct(mp)} — belum bisa dinilai</b>Target mortalitas belum Bapak sahkan, jadi aplikasi tidak menyimpulkan ini bagus atau jelek. Isi di Pengaturan → Master Data. ${ekorAfkir}</div></div>`;
-     if(lewat)return `<div class="alert warn" style="margin-top:14px">${ic('alert',16)}<div><b>Mortalitas ${pct(mp)} — di atas target ${num(tgt,1)}%</b>Ini angka mati sendiri saja; ${num(p.afkir)} ekor afkir tidak ikut dihitung. Periksa penyebab terbanyak di tab Laporan Kematian.</div></div>`;
-     return `<div class="alert ok" style="margin-top:14px">${ic('check',16)}<div><b>Mortalitas ${pct(mp)} — masih di bawah target ${num(tgt,1)}%</b>${ekorAfkir}</div></div>`;})()}
+     if(lewat)return `<div class="alert warn" style="margin-top:14px">${ic('alert',16)}<div><b>Mortalitas ${pct(mp)} — di atas ${asal} ${num(tgt,1)}%</b>Ini angka mati sendiri saja; ${num(p.afkir)} ekor afkir tidak ikut dihitung. Periksa penyebab terbanyak di tab Laporan Kematian.</div></div>`;
+     return `<div class="alert ok" style="margin-top:14px">${ic('check',16)}<div><b>Mortalitas ${pct(mp)} — masih di bawah ${asal} ${num(tgt,1)}%</b>${ekorAfkir}</div></div>`;})()}
    ${beruntun?`<div class="alert warn" style="margin-top:10px">${ic('clock',16)}<div><b>${beruntun.hari} hari berturut-turut kematian di atas batas ${beruntun.batas} ekor/hari</b>Sejak ${fmtDate(beruntun.sejak)}, total ${num(beruntun.ekor)} ekor. Bocor pelan seperti ini sering lolos dari grafik karena tidak terlihat sebagai lonjakan.</div></div>`:''}
    ${rugi?kerugianMati(rugi):''}
+   ${barn?'':tabelTargetKandang()}
   </div>`;}
+
+/* Perbandingan tiap kandang terhadap targetnya masing-masing — diminta Abdur
+   27 Nov 2026. Satu angka target untuk seluruh farm membuat kandang bagus
+   terlihat biasa saja dan kandang bermasalah tidak pernah menonjol. Tabel ini
+   menampilkan tiap kandang berjalan beserta target yang berlaku untuknya dan
+   dari mana target itu berasal, supaya tidak ada kebingungan angka siapa. */
+function tabelTargetKandang(){
+  const r=(DB.targetMatiKandang||[]).filter(x=>x.dod>0);
+  if(r.length<2)return '';
+  /* Dibatasi 15 baris supaya tetap terbaca di farm dengan banyak petak.
+     Yang dipotong justru yang mortalitasnya paling rendah, karena urutannya
+     dari yang paling tinggi — yang perlu perhatian selalu ikut tampil. */
+  const semua=r.slice().sort((a,b)=>(b.matiPct??-1)-(a.matiPct??-1));
+  const BATAS=15;
+  const baris=semua.slice(0,BATAS);
+  const sisa=semua.length-baris.length;
+  const asalKata=d=>d==='batch'?'batch':d==='kandang'?'kandang':'farm';
+  return `<div style="margin-top:18px">
+   <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px">
+     <b style="font-size:14px">Tiap kandang vs targetnya</b>
+     <span class="sub">urut dari yang paling tinggi</span></div>
+   <p style="margin:0 0 12px;font-size:12px;color:var(--dim)">Target diambil dari yang paling khusus: target batch, lalu target kandang, lalu target farm. Atur target kandang di Pengaturan → Kandang.</p>
+   <div class="tbl-wrap"><table><thead><tr><th>Kandang</th><th>Batch</th><th class="r">DOD masuk</th><th class="r">Mati</th><th class="r">Mortalitas</th><th class="r">Target</th><th>Keadaan</th></tr></thead><tbody>
+   ${baris.map(x=>{
+     const adaTgt=x.target!=null&&x.target>0&&!(x.dari==='farm'&&calc.bawaan('targetMortalitasPct'));
+     const lwt=adaTgt&&x.matiPct!=null&&x.matiPct>x.target;
+     return `<tr>
+      <td><b>${esc(x.nama)}</b></td>
+      <td class="sub">${x.batch}</td>
+      <td class="r num">${num(x.dod)}</td>
+      <td class="r num">${num(x.mati)}${x.afkir?`<br><small style="color:var(--dim)">+${num(x.afkir)} afkir</small>`:''}</td>
+      <td class="r num"${lwt?' style="color:#F2C46B"':''}><b>${x.matiPct==null?'—':pct(x.matiPct)}</b></td>
+      <td class="r num">${adaTgt?`${num(x.target,1)}%<br><small style="color:var(--dim)">dari ${asalKata(x.dari)}</small>`:'<small style="color:var(--dim)">belum diatur</small>'}</td>
+      <td>${!adaTgt?'<small style="color:var(--dim)">belum bisa dinilai</small>':lwt?badge('warn','DI ATAS TARGET'):badge('ok','AMAN')}</td></tr>`;}).join('')}
+   </tbody></table></div>
+   ${sisa>0?`<p style="margin:10px 0 0;font-size:12px;color:var(--dim)">+${sisa} kandang lain dengan mortalitas lebih rendah tidak ditampilkan. Pilih kandangnya di atas untuk melihat satu per satu.</p>`:''}</div>`;}
 
 /* Kerugian kematian dalam rupiah. Selalu menyebutkan dasar hitungannya, dan
    menolak menampilkan angka kalau dasarnya belum lengkap. */
@@ -821,7 +861,8 @@ function kartuTrenSiklus(){
        l.mortPoin==null?'':pot(l.mortPoin,'turun',`mati ${l.mortPoin>0?'+':'−'}${num(Math.abs(l.mortPoin),1)} poin`),
        can('finance')?pot(l.laba,'naik',l.laba==null?'':`laba ${l.laba>0?'+':'−'}${num(Math.abs(l.laba),0)}%`):'' ].filter(Boolean).join(' · ')||'<small style="color:var(--dim)">data belum cukup</small>';
      return `<tr><td><b>${c.code}</b></td><td class="r num">${c.fcr!=null?num(c.fcr,2):'—'}</td><td class="r num">${c.mortPct!=null?num(c.mortPct,1)+'%':'—'}</td>${can('finance')?`<td class="r num"><b>${c.labaEkor!=null?rp(c.labaEkor):'—'}</b></td>`:''}<td style="font-size:12.5px">${bagian}</td></tr>`;}).join('')}
-   </tbody></table></div></div>`;}
+   </tbody></table></div>
+   </div>`;}
 
 /* Rekap hasil per penjual DOD — permintaan Abdur 26 Nov 2026.
    Mortalitas antar batch bisa timpang jauh; tanpa mencatat asal DOD, pola itu
