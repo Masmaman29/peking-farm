@@ -157,7 +157,9 @@ function renderShell(content){
     <div class="ai-card"><b>${ic('ai',16)} Tanya Farm AI</b><p>Tanya apa saja tentang populasi, pakan, FCR, stok, atau keuangan siklus ini.</p><button class="btn primary sm" data-act="ai-open">Mulai Chat ${ic('arrow',14)}</button></div>
   </aside>
   <div class="main">
-    <div class="demo-band">${DB.farm.name}${DB.cycle?` · Siklus ${DB.cycle.code} · ${fmtLong(DEMO_TODAY)} · hari ke-${calc.day()}`:` · ${fmtLong(new Date())} · belum ada siklus aktif`} · semua angka dihitung dari transaksi</div>
+    <!-- Pita kuning di atas layar dihapus atas permintaan Abdur 28 Nov 2026.
+         Isinya sudah ada di tempat lain: nama farm di sidebar, kode siklus dan
+         tanggalnya di tombol pemilih siklus di bar atas. -->
     <header class="topbar">
       <button class="iconbtn hamb" data-act="side-open">${ic('menu')}</button>
       <div class="search">${ic('search',16)}<input id="global-search" placeholder="Cari data, laporan, atau tanya AI…" data-act="search-input"><kbd>⌘K</kbd></div>
