@@ -145,14 +145,74 @@ export const ACTIONS = {
     if (warn) await notify(c, ['OWNER', 'MANAGER'], 'mortality_abnormal', `Kematian ${v.qty} ekor di Kandang ${v.barn}`, 'Di atas batas harian — perlu verifikasi', '/populasi');
     return { id: r.rows[0].id, photo, warning: warn };
   },
+  /* Timbang. Dua cara mencatat, dua-duanya sah:
+       berat[]  — berat tiap ekor sampel. Dari sini keseragaman bisa dihitung
+                  (migrasi 027): rata-rata 1,3 kg bisa berarti semua bebek
+                  1,3 kg, bisa juga separuh 0,9 dan separuh 1,7 — beda jauh
+                  harganya, dan tidak bisa ditebak dari totalnya saja.
+       n+total  — cara lama, satu total untuk sekian ekor. Tetap diterima
+                  karena menimbang satu per satu menambah kerja anak kandang;
+                  keseragamannya saja yang tidak diketahui, dan layar
+                  menyebutkan itu, bukan mengarang angka.
+     Ditambah PENJAGA ANGKA JANGGAL: satu salah ketik (12,5 kg untuk 10 ekor
+     yang maksudnya 1,25) merusak ADG, FCR, dan perkiraan tanggal panen
+     sekaligus. Kalau angkanya tidak masuk akal dibanding timbangan terakhir
+     kandang itu, catatan DITOLAK dengan penjelasan, dan baru diterima kalau
+     pencatat menegaskan yakin. Penjaganya di server, bukan cuma di layar,
+     supaya jalur mana pun kena. */
   async WEIGHT(c, p, user, file) {
     need(user, ['OWNER', 'MANAGER', 'ANAK_KANDANG']);
-    const v = z.object({ n: z.number().int().min(1).max(200), total: z.number().positive().max(1000), barn: z.string() }).parse(p);
+    const v = z.object({
+      n: z.number().int().min(1).max(200).optional(),
+      total: z.number().positive().max(1000).optional(),
+      berat: z.array(z.number().positive().max(10)).min(1).max(200).optional(),
+      barn: z.string(), yakin: z.boolean().optional(),
+    }).parse(p);
+    if (!v.berat && !(v.n && v.total))
+      throw new ActionError('Isi berat tiap ekor, atau jumlah ekor beserta total beratnya.');
+    const n = v.berat ? v.berat.length : v.n;
+    const total = v.berat ? Math.round(v.berat.reduce((a, x) => a + x, 0) * 1000) / 1000 : v.total;
+    const rata = total / n;
     await requirePhoto(c, file);
     const b = await barnId(c, v.barn, user); const cy = await cycleOfBarn(c, b, v.barn);
-    const r = await c.query(`INSERT INTO weight_record(cycle_id,barn_id,sample_n,total_kg,occurred_at,created_by) VALUES ($1,$2,$3,$4,now(),$5) RETURNING id, avg_kg`, [cy.id, b, v.n, v.total, user.id]);
+
+    /* Penjaga. Semua ambangnya dibandingkan dengan timbangan TERAKHIR kandang
+       ini di siklus ini — bukan angka mutlak dari buku, supaya tidak memaksakan
+       asumsi ke farm Abdur. */
+    if (!v.yakin) {
+      const soal = [];
+      const pop = (await c.query(
+        `SELECT COALESCE(SUM(qty),0)::int n FROM population_tx WHERE cycle_id=$1 AND barn_id=$2`, [cy.id, b])).rows[0].n;
+      if (pop >= 100 && n < 10)
+        soal.push(`sampel cuma ${n} ekor dari ${pop} ekor di kandang — terlalu sedikit untuk mewakili`);
+      const lalu = (await c.query(
+        `SELECT avg_kg, occurred_at FROM weight_record
+          WHERE cycle_id=$1 AND barn_id=$2 AND deleted_at IS NULL AND status<>'SUPERSEDED'
+          ORDER BY occurred_at DESC LIMIT 1`, [cy.id, b])).rows[0];
+      if (lalu) {
+        const lama = +lalu.avg_kg;
+        const hari = Math.max(1, Math.round((Date.now() - new Date(lalu.occurred_at).getTime()) / 86400000));
+        const naikPerHari = (rata - lama) / hari * 1000;   // gram per hari
+        if (rata < lama)
+          soal.push(`bobot turun dari ${lama.toFixed(2)} kg jadi ${rata.toFixed(2)} kg — bebek tidak menyusut`);
+        else if (naikPerHari > 200)
+          soal.push(`naik ${Math.round(naikPerHari)} gram/hari dari ${lama.toFixed(2)} kg — terlalu cepat untuk bebek Peking`);
+      }
+      if (soal.length)
+        throw new ActionError(
+          `Angkanya perlu dipastikan dulu: ${soal.join('; ')}. Rata-rata yang akan tersimpan ${rata.toFixed(2)} kg dari ${n} ekor. Kalau memang benar, centang "Saya sudah cek, angkanya benar" lalu simpan lagi.`);
+    }
+
+    const r = await c.query(`INSERT INTO weight_record(cycle_id,barn_id,sample_n,total_kg,occurred_at,created_by) VALUES ($1,$2,$3,$4,now(),$5) RETURNING id, avg_kg`, [cy.id, b, n, total, user.id]);
+    if (v.berat) {
+      const nilai = v.berat.map((kg, i) => `($1,${i + 1},${(+kg).toFixed(3)})`).join(',');
+      await c.query(`INSERT INTO weight_sample(record_id,urut,kg) VALUES ${nilai}`, [r.rows[0].id]);
+    }
     const photo = await saveAttachment(c, file, 'weight_record', r.rows[0].id, 'timbangan', user);
-    await audit(c, user.id, 'CREATE', 'weight_record', `Timbang ${v.n} ekor, total ${v.total} kg, rata-rata ${(+r.rows[0].avg_kg).toFixed(2)} kg — Kandang ${v.barn}`, r.rows[0].id);
+    await audit(c, user.id, 'CREATE', 'weight_record',
+      `Timbang ${n} ekor, total ${total} kg, rata-rata ${(+r.rows[0].avg_kg).toFixed(2)} kg — Kandang ${v.barn}` +
+      (v.berat ? ' (ditimbang satu per satu)' : ' (total saja)') + (v.yakin ? ' — ditegaskan pencatat' : ''),
+      r.rows[0].id);
     return { id: r.rows[0].id, avg: +r.rows[0].avg_kg, photo };
   },
   async BARN_CONDITION(c, p, user, file) {

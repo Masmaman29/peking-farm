@@ -457,6 +457,96 @@ const calc = {
     const b=(DB.barns||[]).find(x=>x.id===barn);
     if(b&&b.targetMati!=null)return {pct:b.targetMati,dari:'kandang',bawaan:false};
     return farm;},
+  /* ============ PERTUMBUHAN — tambahan 28 Nov 2026 ============
+     Empat hitungan baru, semuanya memakai data yang sudah ada. Masing-masing
+     mengembalikan {kurang:[...]} kalau datanya belum cukup — bukan angka
+     tebakan — supaya layar bisa menyebutkan apa yang kurang. */
+
+  /* 1. Perkiraan tanggal bebek mencapai target bobot panen.
+     Memakai pertambahan harian yang benar-benar terjadi (calc.adg), bukan
+     kurva target, karena yang ingin diketahui Abdur adalah kapan bebeknya
+     SAMPAI, bukan kapan seharusnya sampai. */
+  prediksiTarget(barn=null){
+    const kurang=[];
+    const tgt=calc.targetBobot();
+    if(!tgt)kurang.push('target bobot panen belum diisi di data siklus');
+    const kini=calc.avgWeight(barn);
+    if(kini==null)kurang.push('belum ada timbangan');
+    const a=calc.adg(barn);
+    if(!a)kurang.push('perlu minimal 2 timbangan untuk tahu kecepatan tumbuh');
+    if(kurang.length)return {kurang};
+    if(kini>=tgt)return {sudah:true,kini,tgt,kurang:[]};
+    if(!(a.g>0))return {kurang:['bobot tidak naik di antara dua timbangan terakhir, jadi tanggalnya tidak bisa dihitung']};
+    const sisaKg=tgt-kini;
+    const hari=Math.ceil(sisaKg*1000/a.g);
+    const tanggal=new Date(DEMO_TODAY.getTime()+hari*86400000);
+    const hariKe=calc.day()+hari;
+    const rencana=DB.cycle?DB.cycle.targetDays:null;
+    return {kurang:[],kini,tgt,hari,tanggal,hariKe,
+      selisih:rencana?hariKe-rencana:null,rencana,gPerHari:a.g,jendela:a.hari};},
+
+  /* 2. Banding dengan batch sendiri yang sudah selesai, di UMUR YANG SAMA.
+     Pembandingnya riwayat Abdur sendiri, bukan kurva bawaan. */
+  bandingBatchLalu(){
+    const d=calc.day(), kini=calc.avgWeight();
+    if(kini==null)return {kurang:['belum ada timbangan di batch ini']};
+    const lalu=DB.bobotBatchLalu||[];
+    if(!lalu.length)return {kurang:['belum ada batch selesai yang pernah ditimbang']};
+    /* Tiap batch lama diambil timbangan yang umurnya PALING DEKAT dengan umur
+       sekarang, dan hanya kalau selisih umurnya tidak lebih dari 3 hari —
+       membandingkan hari ke-24 dengan hari ke-10 tidak ada artinya. */
+    const per={};
+    lalu.forEach(r=>{const j=Math.abs(r.hari-d);
+      if(j<=3&&(!per[r.batch]||j<per[r.batch].jarak))per[r.batch]={batch:r.batch,hari:r.hari,avg:r.avg,jarak:j};});
+    const baris=Object.values(per).sort((a,b)=>b.avg-a.avg);
+    if(!baris.length)return {kurang:[`belum ada batch lama yang ditimbang di sekitar umur ${d} hari`]};
+    const rata=baris.reduce((s,x)=>s+x.avg,0)/baris.length;
+    return {kurang:[],hari:d,kini,baris,rata,beda:kini-rata,bedaPct:rata>0?(kini-rata)/rata*100:null};},
+
+  /* 3. Keseragaman — dari timbangan terakhir yang dicatat PER EKOR.
+     Timbangan yang dicatat sebagai total saja tidak punya angka ini, dan itu
+     dilaporkan apa adanya: tidak diketahui, bukan nol. */
+  keseragaman(barn=null){
+    const ws=DB.weights.filter(w=>(!barn||w.barn===barn)&&w.ragam!=null);
+    if(!ws.length){
+      const adaTotal=DB.weights.filter(w=>!barn||w.barn===barn).length>0;
+      return {kurang:[adaTotal
+        ?'timbangan selama ini dicatat sebagai total saja, jadi keseragamannya tidak diketahui'
+        :'belum ada timbangan']};}
+    const w=ws[ws.length-1];
+    /* Ambang ini bukan angka Abdur, jadi TIDAK dipakai untuk memberi vonis
+       bagus/jelek — hanya untuk mengurutkan kata-katanya. Yang disampaikan ke
+       layar adalah angkanya sendiri beserta ekor paling ringan dan paling
+       berat, biar Abdur yang menilai. */
+    const kata=w.ragam<10?'seragam':w.ragam<15?'cukup seragam':'tidak seragam';
+    return {kurang:[],ragam:w.ragam,ringan:w.ringan,berat:w.berat,n:w.nSampel,
+      tanggal:w.date,barn:w.barn,avg:w.avg,kata,rentang:w.berat-w.ringan};},
+
+  /* 4. Rupiah pakan untuk menaikkan 1 kg bobot.
+     FCR itu rasio yang susah dirasakan; ini menerjemahkannya ke rupiah supaya
+     bisa langsung dibanding harga jual hidup. */
+  rpPerKgNaik(barn=null){
+    const kurang=[];
+    const seri=calc.weightSeries(barn);
+    if(seri.length<2)kurang.push('perlu minimal 2 timbangan');
+    const h=calc.hargaPakanTerbaru();
+    if(!h||!(h.harga>0))kurang.push('harga pakan dari nota pembelian belum ada');
+    if(kurang.length)return {kurang};
+    const akhir=seri[seri.length-1], awal=seri[seri.length-2];
+    const naik=akhir.avg-awal.avg;
+    if(!(naik>0))return {kurang:['bobot tidak naik di antara dua timbangan terakhir']};
+    const pop=calc.population(barn);
+    if(!(pop>0))return {kurang:['tidak ada bebek hidup di lingkup ini']};
+    /* Pakan yang terpakai DI ANTARA dua timbangan itu saja. */
+    const kg=DB.feedRecords.filter(r=>{const d=dayOf(r.date);
+      return (!barn||r.barn===barn)&&d>awal.day&&d<=akhir.day;})
+      .reduce((s,r)=>s+calc.feedVal(r),0);
+    if(!(kg>0))return {kurang:['belum ada catatan pakan keluar di antara dua timbangan terakhir']};
+    const totalNaikKg=naik*pop;
+    return {kurang:[],rp:kg*h.harga/totalNaikKg,kgPakan:kg,naikPerEkor:naik,pop,
+      totalNaikKg,harga:h.harga,dariHari:awal.day,sampaiHari:akhir.day,
+      jenisHarga:h.jenis,cocokJenis:h.cocokJenis};},
+
   /* Persentase mortalitas MURNI — afkir tidak ikut. Pembaginya DOD masuk. */
   mortPctMurni(barn,lingkup){
     const dod=calc.popBalance(barn,lingkup).dod;
@@ -726,4 +816,4 @@ const barnName = b=>b==='ALL'?'Semua kandang':(DB.barns.find(x=>x.id===b)||{name
 const logAudit=()=>{}; // audit ditulis server
 
 /* ---------------- APP STATE ---------------- */
-const state={user:null,batch:null,lastPhone:null,page:'dashboard',busy:false,tab:null,range:'siklus',barn:'ALL',view:'login',sideOpen:false,notif:false,cycPop:false,loading:false,akSuccess:null,aiOpen:false,aiMsgs:[],filters:{},foto:{},kamera:null,gagal:null};
+const state={user:null,batch:null,lastPhone:null,page:'dashboard',busy:false,tab:null,range:'siklus',barn:'ALL',view:'login',sideOpen:false,notif:false,cycPop:false,timbangPerEkor:true,loading:false,akSuccess:null,aiOpen:false,aiMsgs:[],filters:{},foto:{},kamera:null,gagal:null};

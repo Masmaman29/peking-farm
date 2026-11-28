@@ -117,6 +117,15 @@ function cycleCalc(){const f=document.getElementById('c-form');if(!f)return;
    pn.textContent=d?fmtLong(new Date(d.getTime()+(hari-1)*86400000)):'\u2014';}}
 function moveCalc(){}
 /* Pindah layar ke batch lain: muat ulang data khusus batch itu. */
+/* Membaca daftar berat per ekor yang diketik bebas: spasi, koma, titik koma,
+   atau baris baru. Koma desimal gaya Indonesia (1,25) ikut diterima — tapi
+   hanya kalau angkanya memang desimal, sehingga "1,25 1,30" tetap terbaca dua
+   ekor dan bukan satu angka. */
+function bacaBerat(teks){
+  if(!teks)return [];
+  return String(teks).replace(/(\d),(\d{1,3})(?!\d)/g,'$1.$2')
+    .split(/[^0-9.]+/).map(x=>parseFloat(x)).filter(x=>isFinite(x)&&x>0);}
+
 async function gantiBatch(code){
   if(!code||code===state.batch)return;
   /* Filter kandang dikembalikan ke Semua: kandang yang dipilih itu milik batch
@@ -147,6 +156,9 @@ document.addEventListener('click',e=>{
   case 'site-exit':siteExit();break;
   case 'tab':state.tab=d.v;render();break;
   case 'cycle-pop':state.cycPop=!state.cycPop;render();break;
+  /* Pilihan cara mencatat timbangan disimpan di state supaya tetap seperti
+     terakhir dipakai — anak kandang tidak perlu memilih ulang tiap hari. */
+  case 'mode-timbang':state.timbangPerEkor=(d.v==='ekor');renderLayer();break;
   case 'pilih-batch':state.cycPop=false;gantiBatch(d.v);break;
   case 'range':state.range=d.v;render();break;
   case 'barn':state.barn=d.v;render();break;
@@ -301,7 +313,18 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
   case 'ak-save-feed':{if(!needPhoto(f))return;const kg=+v.kg;if(!(kg>0)){toast('Isi jumlah kg.','err');return;}const r=await act('FEED_USAGE',{kg,barn:u.barn,sesi:v.sesi||undefined,feedType:v.jenis&&v.jenis.startsWith('Starter')?'STARTER':v.jenis&&v.jenis.startsWith('Finisher')?'FINISHER':'GROWER'},file);if(r)done(`Pakan ${kg} kg · ${barnName(u.barn)}`,'ak-pakan');break;}
   case 'ak-save-mort':{const q=+v.qty;if(q<=0){toast('Jumlah harus lebih dari 0. Jika tidak ada kematian, tidak perlu input.','warn');return;}if(!needPhoto(f))return;const kind=v.kind==='AFKIR'?'AFKIR':'MATI';
     const r=await act('MORTALITY',{qty:q,barn:u.barn,cause:v.cause,kind,note:v.note},file);if(r){state.filters.akQty=0;done(`${kind==='AFKIR'?'Afkir':'Kematian'} ${q} ekor · ${v.cause}${r.warning?' · ⚠ WARNING: di atas batas normal, Manager diberi notifikasi':''}`,'ak-mati');}break;}
-  case 'ak-save-weight':{if(!needPhoto(f))return;const n=+v.n,t=+v.total;if(!(n>0&&t>0)){toast('Isi jumlah sampel dan total berat.','err');return;}const r=await act('WEIGHT',{n,total:t,barn:u.barn},file);if(r)done(`${n} ekor · total ${t} kg · rata-rata ${num(r.avg,2)} kg`,'ak-timbang');break;}
+  case 'ak-save-weight':{if(!needPhoto(f))return;
+    const perEkor=state.timbangPerEkor!==false;
+    const muatan={barn:u.barn,...(v.yakin?{yakin:true}:{})};
+    let ket='';
+    if(perEkor){const b=bacaBerat(v.berat);
+      if(b.length<2){toast('Tulis berat tiap ekor, minimal 2 ekor.','err');return;}
+      if(b.some(x=>x>10)){toast('Ada angka di atas 10 kg. Itu berat per EKOR, bukan total.','err');return;}
+      muatan.berat=b;ket=`${b.length} ekor ditimbang satu per satu`;}
+    else{const n=+v.n,t=+v.total;if(!(n>0&&t>0)){toast('Isi jumlah sampel dan total berat.','err');return;}
+      muatan.n=n;muatan.total=t;ket=`${n} ekor · total ${t} kg`;}
+    const r=await act('WEIGHT',muatan,file);
+    if(r)done(`${ket} · rata-rata ${num(r.avg,2)} kg`,'ak-timbang');break;}
   case 'ak-save-cond':{const r=await act('BARN_CONDITION',{barn:u.barn,temp:+v.temp,hum:+v.hum,litter:v.Sekam,water:v.Airminum,behavior:v.Perilakubebek,note:v.note},file);if(r)done(`${v.temp}°C · ${v.hum}% · sekam ${v.Sekam}`,'ak-kondisi');break;}
   case 'ak-save-health':{const r=await act('HEALTH',{barn:u.barn,type:v.type,item:v.item,dose:v.dose,note:v.note},file);if(r)done(`${v.type} · ${v.item}`,'ak-sehat');break;}
   case 'submit-correction':{const nv=+v.newVal;if(!(nv>=0)){toast('Isi data baru.','err');return;}const rec=f.dataset.type==='FEED'?DB.feedRecords.find(r=>r.id===f.dataset.id):null;const r=await act('CORRECTION_REQUEST',{type:f.dataset.type,recordId:f.dataset.id,newVal:nv,reason:v.reason+(v.note?' — '+v.note:'')},file);if(r){closeModal();toast('Koreksi diajukan. Status: Pending Approval.');render();}break;}
@@ -334,7 +357,17 @@ document.addEventListener('submit',async e=>{e.preventDefault();const f=e.target
   case 'submit-mort':{if(!needPhoto(f))return;const kind=v.kind==='AFKIR'?'AFKIR':'MATI';
     const r=await act('MORTALITY',{qty:+v.qty,barn:v.barn,cause:v.cause,kind},file);
     if(r){closeModal();toast(`${kind==='AFKIR'?'Afkir':'Kematian'} dicatat. Populasi diperbarui lewat transaksi.`);render();}break;}
-  case 'submit-weigh':{if(!needPhoto(f))return;const r=await act('WEIGHT',{n:+v.n,total:+v.total,barn:v.barn},file);if(r){closeModal();toast(`Timbang dicatat. Rata-rata ${num(r.avg,2)} kg.`);render();}break;}
+  case 'submit-weigh':{if(!needPhoto(f))return;
+    const perEkor=state.timbangPerEkor!==false;
+    const muatan={barn:v.barn,...(v.yakin?{yakin:true}:{})};
+    if(perEkor){const b=bacaBerat(v.berat);
+      if(b.length<2){toast('Tulis berat tiap ekor, minimal 2 ekor — atau pilih "Catat total saja".','err');return;}
+      if(b.some(x=>x>10)){toast('Ada angka di atas 10 kg. Periksa lagi — itu berat per EKOR, bukan total.','err');return;}
+      muatan.berat=b;}
+    else{if(!(+v.n>0&&+v.total>0)){toast('Isi jumlah sampel dan total berat.','err');return;}
+      muatan.n=+v.n;muatan.total=+v.total;}
+    const r=await act('WEIGHT',muatan,file);
+    if(r){closeModal();toast(`Timbang dicatat. Rata-rata ${num(r.avg,2)} kg${perEkor?` dari ${muatan.berat.length} ekor`:''}.`);render();}break;}
   case 'submit-health':{const r=await act('HEALTH',{barn:v.barn,type:v.type,item:v.item,dose:v.dose,note:v.note});if(r){closeModal();toast('Tindakan kesehatan dicatat.');render();}break;}
   case 'submit-user':{const r=await act('USER_CREATE',{name:v.name,role:v.role,barn:v.barn||undefined,phone:v.phone,email:v.email||undefined,password:v.password});if(r){closeModal();toast(`Pengguna ${v.name} dibuat. Sampaikan password awalnya langsung ke yang bersangkutan.`);render();}break;}
   case 'submit-user-delete':{const r=await act('USER_DELETE',{id:f.dataset.id});if(r){closeModal();toast(r.removed?`${r.name} dihapus permanen.`:`${r.name} diarsipkan \u2014 riwayatnya tetap tersimpan.`);render();}break;}

@@ -128,7 +128,7 @@ export async function buildBootstrap(user, batchCode) {
   if (ak && user.barn_id) pilih = punya ? batches.find(b => b.cycle_id === punya.cycle_id) : pilih;
 
   /* ---- Gelombang 2: yang butuh id farm, sekaligus menentukan batch yang dibuka. ---- */
-  const [barns, users, products, prevCycles, batchHabisRows, cycle, asalDodRows, targetMatiRows, farmPopRows, farmMortRows] = await Promise.all([
+  const [barns, users, products, prevCycles, batchHabisRows, cycle, asalDodRows, targetMatiRows, bobotLaluRows, farmPopRows, farmMortRows] = await Promise.all([
     /* target_mort_pct WAJIB ikut. Tanpa itu barns[].targetMati selalu null,
        dan jalur cadangan di calc.targetMati() — yang dipakai kalau kandangnya
        belum/tidak ada di v_target_mati_kandang, misalnya kandang yang sedang
@@ -153,6 +153,18 @@ export async function buildBootstrap(user, batchCode) {
     })(),
     rows('SELECT * FROM v_asal_dod WHERE farm_id=$1 ORDER BY penjual', [farm.id]),
     rows('SELECT * FROM v_target_mati_kandang WHERE farm_id=$1 ORDER BY barn_code', [farm.id]),
+    /* Bobot rata-rata per umur hari dari batch yang sudah selesai, dibatasi 8
+       batch terakhir supaya tidak membengkak seiring tahun. */
+    rows(`SELECT c.code,
+                 ((w.occurred_at AT TIME ZONE 'Asia/Jakarta')::date - c.dod_date) + 1 AS hari,
+                 ROUND(SUM(w.total_kg) / NULLIF(SUM(w.sample_n),0), 4) AS avg_kg
+            FROM weight_record w JOIN cycle c ON c.id = w.cycle_id
+           WHERE c.farm_id = $1 AND c.status <> 'ACTIVE'
+             AND w.deleted_at IS NULL AND w.status <> 'SUPERSEDED'
+             AND c.code IN (SELECT code FROM cycle WHERE farm_id=$1 AND status<>'ACTIVE'
+                             ORDER BY dod_date DESC LIMIT 8)
+           GROUP BY c.code, hari
+           ORDER BY c.code, hari`, [farm.id]),
     /* Lingkup SELURUH FARM untuk halaman Populasi & Mortalitas — diminta Abdur
        27 Nov 2026. Sebelumnya halaman itu hanya pernah melihat siklus yang
        dibuka, sehingga tombol "Semua" di sana sebenarnya berarti "semua kandang
@@ -190,9 +202,11 @@ export async function buildBootstrap(user, batchCode) {
      FROM feed_transaction f WHERE (cycle_id=$1 OR cycle_id IS NULL) AND deleted_at IS NULL
      ORDER BY occurred_at, created_at, id`, [cycle.id]),
     rows(`SELECT w.*, (SELECT file_url FROM attachment a WHERE a.entity_type='weight_record' AND a.entity_id=w.id ORDER BY version DESC LIMIT 1) photo,
-            (SELECT a.source FROM attachment a WHERE a.entity_type='weight_record' AND a.entity_id=w.id ORDER BY version DESC LIMIT 1) photo_source
-     FROM weight_record w WHERE cycle_id=$1 AND deleted_at IS NULL AND status<>'SUPERSEDED'
-     ORDER BY occurred_at, created_at, id`, [cycle.id]),
+            (SELECT a.source FROM attachment a WHERE a.entity_type='weight_record' AND a.entity_id=w.id ORDER BY version DESC LIMIT 1) photo_source,
+            k.ragam_pct, k.paling_ringan, k.paling_berat, k.n AS n_sampel
+     FROM weight_record w LEFT JOIN v_keseragaman k ON k.record_id = w.id
+     WHERE w.cycle_id=$1 AND w.deleted_at IS NULL AND w.status<>'SUPERSEDED'
+     ORDER BY w.occurred_at, w.created_at, w.id`, [cycle.id]),
     rows('SELECT * FROM health_record WHERE cycle_id=$1 AND deleted_at IS NULL ORDER BY occurred_at', [cycle.id]),
     rows('SELECT * FROM barn_condition WHERE cycle_id=$1 ORDER BY occurred_at DESC LIMIT 200', [cycle.id]),
     fin ? rows('SELECT * FROM expense WHERE cycle_id=$1 AND deleted_at IS NULL ORDER BY occurred_at', [cycle.id]) : Promise.resolve([]),
@@ -345,7 +359,20 @@ export async function buildBootstrap(user, batchCode) {
     mortality: mortality.map(m => ({ id: m.id, date: m.occurred_at, barn: bcode[m.barn_id], qty: m.qty, cause: m.cause, kind: m.kind || 'MATI', note: m.note, photo: m.photo, photoSource: m.photo_source, user: m.created_by, status: m.status, locked: m.locked })),
     feedRecords, feedPurchases, feedAdjust,
     feedOpname: opname.map(o => ({ id: o.id, date: o.occurred_at, physical: +o.physical_kg, theoretical: +o.theoretical_kg, user: o.created_by, note: o.note })),
-    weights: weights.map(w => ({ id: w.id, date: w.occurred_at, barn: bcode[w.barn_id], n: w.sample_n, total: +w.total_kg, avg: +w.avg_kg, user: w.created_by, photo: w.photo, photoSource: w.photo_source, locked: w.locked })),
+    /* ragam = simpangan baku dibagi rata-rata, dalam persen. Makin kecil makin
+       seragam. null berarti timbangan itu dicatat sebagai total saja, jadi
+       keseragamannya TIDAK DIKETAHUI — bukan nol, dan layar harus mengatakan
+       begitu, bukan menampilkan angka. */
+    weights: weights.map(w => ({ id: w.id, date: w.occurred_at, barn: bcode[w.barn_id], n: w.sample_n, total: +w.total_kg, avg: +w.avg_kg, user: w.created_by, photo: w.photo, photoSource: w.photo_source, locked: w.locked,
+      ragam: w.ragam_pct == null ? null : +w.ragam_pct,
+      ringan: w.paling_ringan == null ? null : +w.paling_ringan,
+      berat: w.paling_berat == null ? null : +w.paling_berat,
+      nSampel: w.n_sampel == null ? null : +w.n_sampel })),
+    /* Bobot batch yang SUDAH SELESAI, per umur hari — untuk membandingkan batch
+       berjalan dengan riwayat Abdur sendiri di umur yang sama. Pembanding ini
+       dipakai karena kurva target bawaan bukan angka Abdur; riwayatnya sendiri
+       adalah satu-satunya pembanding yang benar-benar miliknya. */
+    bobotBatchLalu: bobotLaluRows.map(r => ({ batch: r.code, hari: +r.hari, avg: +r.avg_kg })),
     health: health.map(h => ({ id: h.id, date: h.occurred_at, barn: h.barn_id ? bcode[h.barn_id] : 'ALL', type: { VACCINE: 'Vaksinasi', VITAMIN: 'Vitamin', TREATMENT: 'Pengobatan', OBSERVATION: 'Observasi' }[h.type], item: h.item, dose: h.dose || '-', user: h.created_by, note: h.note || '' })),
     barnCond: barnCond.map(c => ({ id: c.id, date: c.occurred_at, barn: bcode[c.barn_id], temp: +c.temp_c, hum: +c.humidity_pct, litter: c.litter, water: c.water, behavior: c.behavior, user: c.created_by, note: c.note || '' })),
     expenses: expenses.map(e => ({ id: e.id, date: e.occurred_at, cat: { DOD: 'DOD', PAKAN: 'Pakan', VITAMIN: 'Vitamin', OBAT: 'Obat', LISTRIK: 'Listrik', GAS: 'Gas', SEKAM: 'Sekam', TENAGA_KERJA: 'Tenaga kerja', TRANSPORT: 'Transport', PERALATAN: 'Peralatan', MAINTENANCE: 'Maintenance', LAIN: 'Biaya lain' }[e.category], amount: +e.amount, vendor: e.vendor, ref: e.ref_no, user: e.created_by, status: e.status, locked: e.locked })),

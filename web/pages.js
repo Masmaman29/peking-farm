@@ -1099,9 +1099,103 @@ function pgPertumbuhan(){
 
 
  ${gap<-3?`<div class="alert warn" style="margin-bottom:14px">${ic('alert',18)}<div><b>Bobot tertinggal ${num(Math.abs(gap))}% dari kurva target</b>Periksa kualitas pakan, kepadatan kandang, dan suhu. Rekomendasi: timbang ulang sampel 30 ekor per kandang besok pagi.</div></div>`:''}
+ ${kartuPrediksiPanen(bf)}
+ ${kartuBandingBatch(bf)}
+ <div class="grid g-2" style="margin-bottom:14px">${kartuKeseragaman(bf)}${kartuRpPerKg(bf)}</div>
  <div class="grid ${bf?'':'g-2'}" style="margin-bottom:14px">${chartCard('Aktual vs Target','ch-weight','','',`kg · seluruh siklus${bf?' · '+barnName(bf):''}`)}${bf?'':chartCard('Perbandingan Kandang','ch-barn','','','bobot rata-rata terakhir')}</div>
  <div class="card"><div class="card-h"><h3>Riwayat Timbang</h3></div><div class="tbl-wrap"><table><thead><tr><th>Tanggal</th><th>Hari</th><th>Kandang</th><th class="r">Sampel</th><th class="r">Total berat</th><th class="r">Rata-rata</th><th class="r">Target</th><th>Foto timbangan</th><th>User</th><th>Status</th><th></th></tr></thead><tbody>${DB.weights.filter(w=>!bf||w.barn===bf).slice().reverse().map(w=>{const dd=dayOf(w.date);const t=calc.target(dd);return `<tr><td>${fmtDate(w.date)}</td><td class="num">H${dd}</td><td>${barnName(w.barn)}</td><td class="r num">${w.n} ekor</td><td class="r num">${num(w.total,1)} kg</td><td class="r num"><b>${num(w.avg,2)} kg</b></td><td class="r num" style="color:${w.avg<t*0.97?'#F2C46B':'var(--soft)'}">${num(t,2)} kg</td><td>${photoChip(w.photo)}</td><td>${userName(w.user)}</td><td>${w.locked?badge('neutral','TERKUNCI'):stBadge('RECORDED')}</td><td><button class="btn ghost sm" data-act="modal" data-m="correction" data-type="WEIGHT" data-id="${w.id}">Ajukan koreksi</button></td></tr>`;}).join('')}</tbody></table></div></div>
  `;}
+
+
+/* ===== Kartu tambahan halaman Pertumbuhan — diminta Abdur 28 Nov 2026 =====
+   Semuanya memakai data yang sudah ada. Pola yang sama di keempatnya: kalau
+   datanya belum cukup, kartunya menulis APA yang kurang, bukan tanda strip
+   atau angka tebakan. */
+
+function kurangBlok(judul, kurang, ket){
+  return `<div class="card" style="margin-bottom:14px"><div class="card-h"><h3>${judul}</h3><span class="sub">belum bisa dihitung</span></div>
+    <p style="margin:0;color:var(--dim);font-size:13px;line-height:1.5">Perlu dulu: ${kurang.join('; ')}.${ket?' '+ket:''}</p></div>`;}
+
+/* 1. Kapan bebek sampai target bobot — dari kecepatan tumbuh yang
+      BENAR-BENAR terjadi, bukan dari kurva target. Yang ingin diketahui
+      Abdur: kapan bebeknya sampai, bukan kapan seharusnya sampai. */
+function kartuPrediksiPanen(bf){
+  const r=calc.prediksiTarget(bf);
+  if(r.kurang&&r.kurang.length)
+    return kurangBlok('Perkiraan Tanggal Capai Target Bobot',r.kurang,
+      'Tanpa ini tanggalnya hanya bisa ditebak, dan aplikasi tidak menebak.');
+  if(r.sudah)
+    return `<div class="card" style="margin-bottom:14px"><div class="card-h"><h3>Perkiraan Tanggal Capai Target Bobot</h3></div>
+      <div class="alert ok">${ic('check',16)}<div><b>Target sudah tercapai</b>Bobot rata-rata ${num(r.kini,2)} kg, target panen ${num(r.tgt,2)} kg. Tinggal keputusan Bapak kapan dijual.</div></div></div>`;
+  const telat=r.selisih!=null&&r.selisih>0;
+  return `<div class="card" style="margin-bottom:14px">
+    <div class="card-h"><h3>Perkiraan Tanggal Capai Target Bobot</h3><span class="sub">dari kecepatan tumbuh ${r.jendela} hari terakhir</span></div>
+    <div class="flow"><div class="n"><b class="num">${num(r.kini,2)}</b><small>Bobot sekarang (kg)</small></div>
+      <span class="op">+</span><div class="n"><b class="num">${num(r.gPerHari,0)}</b><small>gram/hari</small></div>
+      <span class="op">=</span><div class="n res"><b class="num">${fmtDate(r.tanggal)}</b><small>Perkiraan ${num(r.tgt,2)} kg · hari ke-${r.hariKe}</small></div></div>
+    <p style="margin:12px 0 0;font-size:13px;color:var(--dim);line-height:1.5">
+      Kira-kira <b style="color:var(--ink)">${r.hari} hari lagi</b>.
+      ${r.rencana?(telat
+        ? `Rencana panen hari ke-${r.rencana}, jadi perkiraan ini <b style="color:#F2C46B">mundur ${r.selisih} hari</b> — kalau pembeli sudah dijanjikan tanggalnya, perlu dibicarakan sekarang, bukan nanti.`
+        : r.selisih===0 ? `Pas dengan rencana panen hari ke-${r.rencana}.`
+        : `Rencana panen hari ke-${r.rencana}, jadi perkiraan ini <b style="color:var(--soft)">maju ${Math.abs(r.selisih)} hari</b>.`):''}
+      Angka ini berubah tiap kali ada timbangan baru; makin sering ditimbang makin dekat ke kenyataan.</p></div>`;}
+
+/* 2. Banding dengan batch Abdur sendiri di umur yang sama. Pembandingnya
+      riwayatnya sendiri, bukan kurva bawaan yang bukan angka dia. */
+function kartuBandingBatch(bf){
+  if(bf)return '';   // riwayat lama disimpan per batch, bukan per kandang
+  const r=calc.bandingBatchLalu();
+  if(r.kurang&&r.kurang.length)
+    return kurangBlok('Banding dengan Batch Sebelumnya',r.kurang,
+      'Pembandingnya riwayat timbang Bapak sendiri, bukan angka dari buku.');
+  const lebih=r.beda>0;
+  return `<div class="card" style="margin-bottom:14px">
+    <div class="card-h"><h3>Banding dengan Batch Sebelumnya</h3><span class="sub">di umur yang sama · hari ke-${r.hari}</span></div>
+    <div class="tbl-wrap"><table><thead><tr><th>Batch</th><th class="r">Umur saat ditimbang</th><th class="r">Bobot rata-rata</th></tr></thead><tbody>
+      <tr style="background:rgba(255,255,255,.04)"><td><b>Batch ini${DB.cycle?' · '+DB.cycle.code:''}</b></td><td class="r num">hari ke-${r.hari}</td><td class="r num"><b>${num(r.kini,2)} kg</b></td></tr>
+      ${r.baris.map(x=>`<tr><td>${x.batch}</td><td class="r num">hari ke-${x.hari}</td><td class="r num">${num(x.avg,2)} kg</td></tr>`).join('')}
+    </tbody><tfoot class="total"><tr><td><b>Rata-rata batch lama</b></td><td></td><td class="r num"><b>${num(r.rata,2)} kg</b></td></tr></tfoot></table></div>
+    <div class="alert ${lebih?'ok':'warn'}" style="margin-top:12px">${ic(lebih?'check':'alert',16)}<div>
+      <b>${lebih?'Lebih berat':'Lebih ringan'} ${num(Math.abs(r.beda),2)} kg dari batch lama${r.bedaPct!=null?` (${r.bedaPct>0?'+':''}${num(r.bedaPct,1)}%)`:''}</b>
+      ${lebih?'Batch ini tumbuh lebih baik dari rata-rata batch sebelumnya di umur yang sama.'
+             :'Batch ini tumbuh lebih lambat dari batch sebelumnya di umur yang sama. Yang biasanya jadi sebab: pakan telat atau kurang, kandang terlalu padat, atau ada penyakit.'}
+      </div></div></div>`;}
+
+/* 3. Keseragaman. Hanya ada kalau timbangan dicatat PER EKOR — kalau dicatat
+      sebagai total saja, kartunya mengatakan tidak diketahui, bukan nol. */
+function kartuKeseragaman(bf){
+  const r=calc.keseragaman(bf);
+  if(r.kurang&&r.kurang.length)
+    return `<div class="card"><div class="card-h"><h3>Keseragaman Bobot</h3><span class="sub">belum diketahui</span></div>
+      <p style="margin:0 0 10px;color:var(--dim);font-size:13px;line-height:1.5">${r.kurang[0].charAt(0).toUpperCase()+r.kurang[0].slice(1)}.</p>
+      <p style="margin:0;font-size:13px;color:var(--dim);line-height:1.5">Rata-rata 1,3 kg bisa berarti semua bebek 1,3 kg, bisa juga separuh 0,9 kg dan separuh 1,7 kg — harganya jauh berbeda, karena yang kekecilan jatuh jadi afkir. Untuk tahu bedanya, pada form Input Timbang pilih <b style="color:var(--ink)">timbang satu per satu</b>.</p></div>`;
+  return `<div class="card"><div class="card-h"><h3>Keseragaman Bobot</h3><span class="sub">${r.n} ekor · ${fmtDate(r.tanggal)}${bf?'':' · '+barnName(r.barn)}</span></div>
+    <div class="flow"><div class="n"><b class="num">${num(r.ringan,2)}</b><small>Paling ringan (kg)</small></div>
+      <span class="op">–</span><div class="n"><b class="num">${num(r.berat,2)}</b><small>Paling berat (kg)</small></div>
+      <span class="op">=</span><div class="n res"><b class="num">${num(r.rentang,2)}</b><small>Selisih (kg)</small></div></div>
+    <p style="margin:12px 0 0;font-size:13px;color:var(--dim);line-height:1.5">
+      Ragam <b style="color:var(--ink)">${num(r.ragam,1)}%</b> — ${r.kata}. Makin kecil angkanya makin sama besar bebeknya.
+      Bebek paling ringan ${num(r.ringan,2)} kg sementara rata-ratanya ${num(r.avg,2)} kg${r.ringan<r.avg*0.8?' — yang seperti ini biasanya masuk afkir saat panen':''}.</p></div>`;}
+
+/* 4. Rupiah pakan untuk menaikkan 1 kg bobot. FCR diterjemahkan ke rupiah,
+      supaya bisa langsung dibanding harga jual hidup. */
+function kartuRpPerKg(bf){
+  const r=calc.rpPerKgNaik(bf);
+  if(r.kurang&&r.kurang.length)
+    return `<div class="card"><div class="card-h"><h3>Biaya Pakan per Kg Kenaikan</h3><span class="sub">belum bisa dihitung</span></div>
+      <p style="margin:0;color:var(--dim);font-size:13px;line-height:1.5">Perlu dulu: ${r.kurang.join('; ')}.</p></div>`;
+  const jual=+calc.livePrice();
+  return `<div class="card"><div class="card-h"><h3>Biaya Pakan per Kg Kenaikan</h3><span class="sub">H${r.dariHari} → H${r.sampaiHari}</span></div>
+    <div style="display:flex;align-items:baseline;gap:8px;margin:4px 0 2px"><b class="num" style="font-size:30px;line-height:1.1">${rp(r.rp)}</b><small style="color:var(--dim)">per kg kenaikan bobot</small></div>
+    <p style="margin:10px 0 0;font-size:13px;color:var(--dim);line-height:1.5">
+      ${num(r.kgPakan,1)} kg pakan × ${rp(r.harga)}/kg habis untuk menaikkan ${num(r.naikPerEkor,2)} kg per ekor pada ${num(r.pop)} ekor (${num(r.totalNaikKg,1)} kg bobot hidup).
+      ${jual>0
+        ? (r.rp<jual
+            ? ` Harga jual hidup Bapak ${rp(jual)}/kg, jadi tiap kg kenaikan masih menghasilkan <b style="color:var(--soft)">${rp(jual-r.rp)}</b> di atas biaya pakannya — belum dikurangi DOD, obat, listrik, dan tenaga kerja.`
+            : ` Harga jual hidup Bapak ${rp(jual)}/kg, <b style="color:#F2C46B">lebih rendah dari biaya pakannya sendiri</b> — artinya menambah bobot sekarang justru menambah rugi.`)
+        : ' Isi harga jual hidup di Pengaturan supaya bisa langsung dibanding dengan harga jual.'}
+      ${r.cocokJenis?'':' Harga diambil dari nota pakan terbaru yang ada, karena jenis pakan batch ini belum pernah dibeli.'}</p></div>`;}
 
 function pgKesehatan(){const list=DB.health.filter(h=>state.barn==='ALL'||h.barn===state.barn||h.barn==='ALL');
  return pageHead('Kesehatan','Vaksinasi, vitamin, pengobatan, dan observasi. Setiap tindakan tercatat dengan dosis, user, dan waktu.',`${seg([['ALL','Semua'],...barnsWorking().map(b=>[b.id,b.name])],state.barn,'barn')}${state.user.role!=='ANAK_KANDANG'?`<button class="btn primary" data-act="modal" data-m="health">${ic('plus',14)} Catat Tindakan</button>`:''}`)+
