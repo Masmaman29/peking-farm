@@ -129,7 +129,14 @@ export async function buildBootstrap(user, batchCode) {
 
   /* ---- Gelombang 2: yang butuh id farm, sekaligus menentukan batch yang dibuka. ---- */
   const [barns, users, products, prevCycles, batchHabisRows, cycle, asalDodRows, targetMatiRows, farmPopRows, farmMortRows] = await Promise.all([
-    rows('SELECT id,code,name,capacity,note,is_active FROM barn WHERE farm_id=$1 ORDER BY code', [farm.id]),
+    /* target_mort_pct WAJIB ikut. Tanpa itu barns[].targetMati selalu null,
+       dan jalur cadangan di calc.targetMati() — yang dipakai kalau kandangnya
+       belum/tidak ada di v_target_mati_kandang, misalnya kandang yang sedang
+       kosong — tidak pernah bekerja: layar memakai target farm padahal kandang
+       itu punya targetnya sendiri. Isian target di form kandang juga tampil
+       kosong walau targetnya tersimpan, seolah-olah tidak jadi disimpan.
+       Ketahuan uji 28 Nov 2026. */
+    rows('SELECT id,code,name,capacity,note,is_active,target_mort_pct FROM barn WHERE farm_id=$1 ORDER BY code', [farm.id]),
     rows(`SELECT id,name,role,barn_id,is_active,phone,email,last_login_at,archived_at FROM app_user WHERE farm_id=$1 ORDER BY role,name`, [farm.id]),
     rows('SELECT * FROM product WHERE farm_id=$1 ORDER BY type', [farm.id]),
     rows(`SELECT s.*, c.dod_source FROM v_cycle_summary s JOIN cycle c ON c.id=s.cycle_id

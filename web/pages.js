@@ -28,6 +28,7 @@ const IC={
  clock:'<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
  out:'<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
  arrow:'<path d="M5 12h14M12 5l7 7-7 7"/>',
+ turun:'<path d="M6 9l6 6 6-6"/>',
  dl:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
  plus:'<path d="M12 5v14M5 12h14"/>',
  globe:'<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20z"/>',
@@ -163,12 +164,49 @@ function renderShell(content){
       <div style="margin-left:auto;position:relative"><button class="iconbtn" data-act="notif">${ic('bell')}${notifs.length?`<span class="dot">${notifs.length}</span>`:''}</button>
         ${state.notif?`<div class="notif-pop">${notifs.slice(0,7).map(n=>`<div class="it" data-act="go" data-page="${n.page}" style="cursor:pointer"><span style="color:${n.t==='anomaly'?'var(--warn)':n.t==='order'?'var(--gold)':'#F29390'}">${ic(n.t==='anomaly'?'alert':n.t==='order'?'cart':'check',16)}</span><div><b>${n.title}</b><small>${n.sub} · ${fmtDT(n.date)}</small></div></div>`).join('')||'<div class="it">Tidak ada notifikasi.</div>'}</div>`:''}
       </div>
-      <div class="cycle-pill">${ic('cycle',16)}<div>${DB.cycle?`<b>Siklus ${DB.cycle.code}</b><small>${fmtDate(DB.cycle.dodDate)} – ${fmtDate(dateOfDay(DB.cycle.targetDays))}</small>`:`<b>Belum ada siklus</b><small>Mulai siklus pertama</small>`}</div></div>
+      ${pilihanSiklus(u)}
       <div class="user-pill"><span class="avatar">${u.name.split(' ').map(x=>x[0]).slice(0,2).join('')}</span><span><b style="display:block;font-size:13px;line-height:1.1">${u.name}</b><small style="color:var(--muted)">${ROLES[u.role].label}</small></span><button class="btn ghost sm" data-act="logout" title="Keluar">${ic('out',16)}</button></div>
     </header>
     <div class="content" id="content">${content}</div>
   </div></div>`;
 }
+/* Pemilih siklus di bar atas — diminta Abdur 28 Nov 2026.
+   Sebelum ini bagian ini cuma LABEL, bukan tombol. Satu-satunya cara mengganti
+   siklus yang dibuka adalah lewat tombol "Buka" di tabel batch halaman Siklus
+   Ternak, jadi untuk melihat kandang lain dari Dashboard harus pindah halaman
+   dulu lalu kembali. Sekarang bisa langsung dari bar atas, dan karena bar atas
+   ikut di semua halaman, pindah batch tidak memindahkan halaman — Abdur tetap
+   di layar yang sedang dilihat, tinggal batch-nya yang berganti.
+
+   Isinya hanya batch yang SEDANG JALAN. Batch yang sudah ditutup tidak masuk
+   supaya daftarnya tidak memanjang terus seiring waktu; yang ditutup tetap
+   dibuka lewat Riwayat seperti biasa.
+
+   ANAK KANDANG tidak mendapat pemilih ini: siklusnya sudah dipatok server ke
+   kandang tempat dia bekerja, jadi tombolnya hanya akan menipu — kelihatan
+   bisa dipilih padahal server akan mengembalikannya ke kandang dia. */
+function pilihanSiklus(u){
+  const isi=DB.cycle
+    ? `<b>Siklus ${DB.cycle.code}</b><small>${fmtDate(DB.cycle.dodDate)} – ${fmtDate(dateOfDay(DB.cycle.targetDays))}</small>`
+    : `<b>Belum ada siklus</b><small>Mulai siklus pertama</small>`;
+  const jalan=(DB.batches||[]).filter(b=>b.population>0);
+  // satu batch saja, atau anak kandang: tidak ada yang bisa dipilih, tetap label
+  if(u.role==='ANAK_KANDANG'||jalan.length<2)
+    return `<div class="cycle-pill">${ic('cycle',16)}<div>${isi}</div></div>`;
+  const daftar=jalan.map(b=>{
+    const kini=DB.cycle&&b.code===DB.cycle.code;
+    return `<div class="it${kini?' kini':''}" data-act="pilih-batch" data-v="${b.code}">
+      <span style="color:${kini?'var(--soft)':'var(--dim)'}">${ic(kini?'check':'cycle',16)}</span>
+      <div><b>${b.barnNames||b.barnName} · ${b.code}</b>
+        <small>${num(b.population)} ekor · hari ke-${b.umur}${kini?' · sedang dibuka':''}</small></div></div>`;}).join('');
+  return `<div style="position:relative">
+    <button class="cycle-pill klik${state.cycPop?' buka':''}" data-act="cycle-pop" title="Ganti batch yang dibuka">
+      ${ic('cycle',16)}<div>${isi}</div>${ic('turun',14)}</button>
+    ${state.cycPop?`<div class="notif-pop cyc-pop">
+      <div class="kep">Batch yang sedang jalan</div><div class="gulung">${daftar}</div>
+      <div class="kak">Mengganti batch hanya mengubah angka milik satu siklus. Angka seluruh farm tidak ikut berubah.</div>
+    </div>`:''}</div>`;}
+
 function pageHead(t,d,r=''){return `<div class="page-head"><div><h1>${t}</h1><div class="desc">${d}</div></div><div class="row">${r}</div></div>`;}
 function denied(){return `<div class="denied"><div class="lock">${ic('lock',30)}</div><h2>Akses ditolak</h2><p style="color:var(--muted);max-width:44ch">Role <b>${ROLES[state.user.role].label}</b> tidak memiliki izin untuk halaman ini. Hak akses divalidasi di server, bukan hanya disembunyikan di tampilan.</p><button class="btn" data-act="go" data-page="${state.user.role==='ANAK_KANDANG'?'ak-home':'dashboard'}">Kembali</button></div>`;}
 function skeleton(){return `<div class="grid g-kpi">${'<div class="skel" style="height:118px"></div>'.repeat(4)}</div><div class="grid g-2" style="margin-top:14px">${'<div class="skel" style="height:260px"></div>'.repeat(2)}</div>`;}

@@ -119,11 +119,21 @@ function moveCalc(){}
 /* Pindah layar ke batch lain: muat ulang data khusus batch itu. */
 async function gantiBatch(code){
   if(!code||code===state.batch)return;
+  /* Filter kandang dikembalikan ke Semua: kandang yang dipilih itu milik batch
+     lama, dan batch baru belum tentu mengisinya — kalau dibiarkan, layar
+     menampilkan kandang kosong tanpa penjelasan. */
+  state.barn='ALL';
   state.batch=code;state.loading=true;render();
   try{await loadDB(code);}catch(e){toast(e.message,'err');}
   state.loading=false;render();}
 /* ---------------- EVENT: CLICK ---------------- */
 document.addEventListener('click',e=>{
+ /* Pemilih siklus di bar atas: klik di mana pun di luar daftarnya menutup
+    daftar itu, seperti daftar yang sudah biasa dipakai orang. Dicek SEBELUM
+    baris di bawah, karena baris itu berhenti kalau yang diklik bukan tombol,
+    sehingga klik di area kosong tidak akan pernah sampai ke sini. */
+ if(state.cycPop&&!e.target.closest('.cyc-pop')&&!e.target.closest('[data-act=cycle-pop]')){
+   state.cycPop=false;render();}
  const el=e.target.closest('[data-act]');if(!el)return;const a=el.dataset.act;const d=el.dataset;
  if(a==='modal-close-bg'||a==='ai-close-bg'){if(e.target===el){if(a==='ai-close-bg')state.aiOpen=false;else state.modal=null;renderLayer();}return;}
  if(['search-input','audit-q','audit-user','audit-action','repbarn','repday','order-product','site-product','order-calc','site-calc','calc-avg','photo','order-customer','cycle-calc','prod-src','harvest-calc','harvest-cust','move-calc','exp-sasaran'].includes(a))return;
@@ -136,7 +146,8 @@ document.addEventListener('click',e=>{
   case 'site':siteBoot();break;
   case 'site-exit':siteExit();break;
   case 'tab':state.tab=d.v;render();break;
-  case 'pilih-batch':gantiBatch(d.v);break;
+  case 'cycle-pop':state.cycPop=!state.cycPop;render();break;
+  case 'pilih-batch':state.cycPop=false;gantiBatch(d.v);break;
   case 'range':state.range=d.v;render();break;
   case 'barn':state.barn=d.v;render();break;
   /* Lingkup halaman Populasi & Mortalitas: 'siklus' (bawaan) atau 'farm'.
@@ -229,7 +240,11 @@ document.addEventListener('input',e=>{const el=e.target;const a=el.dataset.act;
  if(a==='harvest-calc')harvestCalc();
  if(a==='calc-avg'){const n=+document.getElementById('ak-n').value,t=+document.getElementById('ak-total').value;document.getElementById('avg-val').textContent=n&&t?num(t/n,2)+' kg/ekor':'—';}
 });
-document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='k'){e.preventDefault();const s=document.getElementById('global-search');if(s)s.focus();}if(e.key==='Escape'){if(state.kamera){tutupKamera();renderJagaIsian();return;}state.modal=null;state.aiOpen=false;state.notif=false;renderLayer();}
+document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='k'){e.preventDefault();const s=document.getElementById('global-search');if(s)s.focus();}if(e.key==='Escape'){if(state.kamera){tutupKamera();renderJagaIsian();return;}
+  /* Daftar siklus ada di bar atas, bukan di lapisan layar, jadi harus render()
+     penuh — renderLayer() saja tidak akan menutupnya. */
+  if(state.cycPop){state.cycPop=false;state.modal=null;state.aiOpen=false;state.notif=false;render();return;}
+  state.modal=null;state.aiOpen=false;state.notif=false;renderLayer();}
  if(e.key==='Enter'&&e.target.id==='global-search'){e.preventDefault();const q=e.target.value.trim();if(!q)return;const map=[['pakan','pakan'],['populasi','populasi'],['mortal','populasi'],['bobot','pertumbuhan'],['fcr','pakan'],['keuangan','keuangan'],['laba','keuangan'],['order','penjualan'],['penjualan','penjualan'],['stok','stok'],['approval','persetujuan'],['persetujuan','persetujuan'],['audit','audit'],['anomali','anomali'],['laporan','laporan'],['user','pengguna']];const hit=map.find(([k])=>q.toLowerCase().includes(k));if(hit&&canPage(hit[1]))go(hit[1]);else{state.aiOpen=true;renderLayer();aiAsk(q);}}
 });
 /* ---------- Unduh laporan ----------
